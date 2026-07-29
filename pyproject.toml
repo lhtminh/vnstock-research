@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vnresearch"
+version = "0.1.0"
+description = "Alpha research pipeline for the Vietnamese market, on top of vnstock-service"
+requires-python = ">=3.13,<3.15"
+
+# Python floor is 3.13 because xgboost >= 3.3 requires >= 3.12 and vectorbt
+# requires < 3.15. 3.13 is the version where every wheel here is stable.
+dependencies = [
+    "duckdb>=1.5.5",
+    "pyarrow>=17",
+    "pandas>=2.2",
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "scikit-learn>=1.5",
+    "lightgbm>=4.7",
+    "xgboost>=3.3",
+    "pyyaml>=6",
+    "typer>=0.12",
+    "tabulate>=0.9",  # pandas.to_markdown() for the alpha report
+]
+
+[project.optional-dependencies]
+# vectorbt pins numpy/pandas hard (>=2.4.6 / >=3.0.3). Kept separate so a
+# resolver conflict there cannot block the data and model layers.
+backtest = ["vectorbt>=1.1.0"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+vnr = "vnresearch.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100

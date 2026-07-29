@@ -1,0 +1,19 @@
+# Backtest settings.
+
+portfolio:
+  top_n: 30              # names held, equal weighted
+  rebalance_every: 5     # sessions; matches the 5-session label
+  init_cash: 1.0e9       # VND
+  # Position size cap as a fraction of the name's 20-session ADTV. Above this
+  # you are buying liquidity that was not there.
+  max_adtv_frac: 0.10
+
+costs:
+  # Vietnamese retail reality. Brokerage is charged both ways; the 0.1%
+  # personal income tax applies to SALES only. vectorbt takes one symmetric
+  # fee, so the sell tax is folded in as half on each side.
+  brokerage: 0.0015      # 0.15% per side
+  sell_tax: 0.0010       # 0.10% of sale value
+  slippage: 0.0010       # 0.10%, thin books and wide spreads
+
+benchmark: VNINDEX

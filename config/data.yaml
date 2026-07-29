@@ -1,0 +1,22 @@
+# Source database and what to mirror locally.
+# DATABASE_URL in the environment overrides `dsn`.
+
+dsn: "postgres://postgres:postgres@localhost:5432/vnstock"
+
+mirror_dir: "data/mirror"
+
+# Tables copied to Parquet. daily_prices is the big one (~4.8M rows);
+# the rest are small enough that copying them all is simpler than picking.
+tables:
+  - daily_prices
+  - symbols
+  - index_series
+  - trading_calendar
+  - corporate_actions
+  - market_snapshot
+  - company_snapshot
+  - index_membership
+
+# Bars before this are kept but rarely used: the market was tiny and the
+# adjustment history is least reliable. Set to null to mirror everything.
+min_date: null

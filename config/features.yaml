@@ -1,0 +1,30 @@
+# Universe and feature parameters.
+
+universe:
+  # Rolling window for average daily traded value, in sessions.
+  adtv_window: 20
+  # Minimum ADTV to be considered investable, in VND. 1bn ~= USD 38k/day.
+  # Several hundred UPCOM names trade a few million VND a day; a model trained
+  # on them learns from securities nobody can actually buy.
+  adtv_min_vnd: 1.0e9
+  # Require a full window before admitting a ticker, so a newly listed name
+  # cannot enter on one busy day.
+  require_full_window: true
+
+label:
+  # Primary horizon in sessions, used by the model and backtest. 5 = weekly.
+  horizon: 5
+  # Extra horizons, labelled alongside, so IC decay can be measured without
+  # rebuilding. Picking a holding period from decay beats guessing it.
+  horizons: [1, 5, 10, 21]
+  # Price used for entry and exit. "open" is the honest choice: a signal from
+  # yesterday's close can be acted on at today's open, not at yesterday's close.
+  entry_price: open
+
+features:
+  momentum_windows: [5, 21, 63, 126, 252]
+  vol_windows: [21, 63]
+  beta_window: 60
+  # Winsorize cross-sectional features at these percentiles before ranking,
+  # so one broken print cannot dominate a day's z-scores.
+  winsor: [0.01, 0.99]
