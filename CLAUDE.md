@@ -53,6 +53,8 @@ Never modify `D:\vnstock-service`. It is finished, merged and on a scheduler.
 | the target is residual, not simple excess | simple excess is rank-invariant — 99.8% of rows share their day's benchmark window, so subtracting it changes no ordering. Only the beta term varies per stock |
 | holdout IC (0.123) > walk-forward IC (0.083) | not a bug. Recent years genuinely rank better; it also means nothing was overfitted to the dev period |
 | strong IC and a losing backtest | the signal is fine and the construction is not: 73.7% turnover x 0.6% round trip = 22.3%/yr against a ~19%/yr gross edge |
+| horizon-21 labels are NOT used despite IC decay favouring them | tested. Individual features do strengthen out to 21 sessions, but the combined model's IC FALLS (0.083 -> 0.067) and gets unstable across folds. Lower cost did not make up for it |
+| the backtest parameters look under-tuned | deliberate. 35 dev configurations were searched; dev and holdout alpha rank them in opposite orders. More searching fits noise |
 
 ## Where the reasoning lives
 
