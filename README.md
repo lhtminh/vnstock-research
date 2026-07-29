@@ -83,18 +83,51 @@ Single features, 5-session horizon — all consistent with the literature:
 | `ret_1` | −0.034 | short-term reversal, decays to zero by 21d |
 | `mom_12_1` | +0.017 | classic momentum, not monotonic here |
 
-LightGBM across 6 purged walk-forward folds: **mean IC +0.0975**, positive in
-every fold. Backtest 2013–2026, top 30 equal-weighted, weekly rebalance:
+LightGBM on the residual target, 4 purged walk-forward folds (2021–2023):
+**mean IC +0.0825**, positive in every fold. On the **frozen holdout**
+(2024-01-01 onward, never trained on, scored once): **IC +0.1231, IR 1.32**.
+The holdout scoring higher than development is the opposite of overfitting.
+
+### The signal works. The portfolio does not.
+
+Holdout, per 5-session period:
 
 ```
-Total Return      607.7%     VNINDEX  78.6%
-CAGR               15.6%     VNINDEX   8.8%
-Max Drawdown       50.4%
-Sharpe              0.99
+top decile   raw forward return   +0.380%
+bottom       raw forward return   -1.077%
+long-short spread                 +1.456%   <- a large, real edge
 ```
 
-Allowing fills on limit-locked bars would report **743.6%** instead. That
-136-point gap is the phantom return the tradeability filter removes.
+Yet the long-only top-30 weekly book **loses money**:
+
+```
+CAGR              -2.59%     VNINDEX  +18.84%
+beta                0.82
+ALPHA             -18.05%
+2024 excess       -12.2%
+2025 excess       -30.7%
+2026 excess       -12.5%
+```
+
+The arithmetic is not subtle:
+
+```
+realized turnover per rebalance    73.7%
+cost per rebalance                 0.442%
+top-decile gross edge per period   0.380%
+net                               -0.062%   x50 rebalances a year
+```
+
+**Weekly rebalancing of a top-30 book spends 22.3% a year to harvest an edge
+worth about 19%.** The next step is portfolio construction — longer holds, lower
+turnover, or a long-short book that captures the 1.456% spread instead of the
+0.380% long leg — not more features.
+
+Two earlier numbers in this file were wrong and are worth recording. A "607%
+total return" came from a weight bug that let dropped positions carry their old
+weight forever, so the book grew to 1,156% deployed. And the ~15.6% CAGR it
+implied was mostly beta, which is why the decomposition is now printed by
+default.
 
 ## Verification
 

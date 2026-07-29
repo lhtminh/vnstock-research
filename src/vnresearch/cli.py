@@ -84,15 +84,32 @@ def train(model: str = "lightgbm", controls: bool = False) -> None:
 
 
 @app.command()
-def backtest(model: str = "lightgbm", compare: bool = False) -> None:
+def holdout(model: str = "lightgbm") -> None:
+    """Score once on the frozen holdout. The only number development never saw."""
+    from vnresearch.model import train as tr
+
+    r = tr.evaluate_holdout(model)
+    oos = r.pop("oos")
+    for k, v in r.items():
+        typer.echo(f"  {k:<16} {v:.4f}" if isinstance(v, float) else f"  {k:<16} {v}")
+
+    out = config.path("data") / f"oos_{model}_holdout.parquet"
+    oos.to_parquet(out)
+    typer.echo(f"  -> {out}")
+
+
+@app.command()
+def backtest(model: str = "lightgbm", compare: bool = False, holdout: bool = False) -> None:
     """Backtest out-of-sample predictions. --compare shows the untradeable-fill delta."""
     import pandas as pd
 
     from vnresearch.backtest import engine
 
-    path = config.path("data") / f"oos_{model}.parquet"
+    suffix = "_holdout" if holdout else ""
+    path = config.path("data") / f"oos_{model}{suffix}.parquet"
     if not path.exists():
-        raise typer.BadParameter(f"{path} missing — run `vnr train --model {model}` first")
+        cmd = "holdout" if holdout else "train"
+        raise typer.BadParameter(f"{path} missing — run `vnr {cmd} --model {model}` first")
     oos = pd.read_parquet(path)
 
     typer.echo("\n=== tradeable fills only ===")

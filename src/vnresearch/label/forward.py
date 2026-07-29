@@ -34,8 +34,8 @@ MAX_ENTRY_GAP_DAYS = 12  # covers the Tet holiday
 MAX_EXIT_GAP_PER_SESSION = 3
 
 
-def _horizon_cols(h: int, price_col: str) -> tuple[str, str, str]:
-    """(lead columns, validity expression, output columns) for one horizon."""
+def _horizon_cols(h: int, price_col: str) -> tuple[str, str, str, str]:
+    """(lead columns, validity expression, benchmark join, output columns)."""
     leads = f"""
         LEAD({price_col}, {1 + h}) OVER w AS exit_px_{h},
         LEAD(date, {1 + h})        OVER w AS exit_date_{h},
@@ -47,22 +47,32 @@ def _horizon_cols(h: int, price_col: str) -> tuple[str, str, str]:
          AND exit_px_{h} IS NOT NULL AND exit_px_{h} > 0
          AND date_diff('day', entry_date, exit_date_{h}) <= {gap}) AS label_ok_{h}"""
 
+    # The benchmark measured over the SAME window, open to open, so it lines up
+    # with how the position is actually entered and exited.
+    join = f"LEFT JOIN idx bx_{h} ON bx_{h}.date = v.exit_date_{h}"
+
     out = f"""
         exit_px_{h}, exit_date_{h}, exit_tradeable_{h}, label_ok_{h},
         CASE WHEN label_ok_{h} THEN exit_px_{h} / entry_px - 1 END AS fwd_ret_{h},
+        CASE WHEN label_ok_{h} THEN bench_exit_px_{h} / NULLIF(bench_entry_px, 0) - 1 END
+            AS bench_ret_{h},
         CASE WHEN label_ok_{h} AND in_universe THEN
             PERCENT_RANK() OVER (
                 PARTITION BY date, (label_ok_{h} AND in_universe)
                 ORDER BY CASE WHEN label_ok_{h} THEN exit_px_{h} / entry_px - 1 END
             )
         END AS fwd_rank_{h}"""
-    return leads, ok, out
+    return leads, ok, join, out
 
 
-def _sql(horizons: list[int], primary: int, price_col: str) -> str:
-    leads, oks, outs = zip(*(_horizon_cols(h, price_col) for h in horizons))
+def _sql(horizons: list[int], primary: int, price_col: str, benchmark: str = "VNINDEX") -> str:
+    leads, oks, joins, outs = zip(*(_horizon_cols(h, price_col) for h in horizons))
+    bench_exits = ", ".join(f"bx_{h}.px AS bench_exit_px_{h}" for h in horizons)
     return f"""
-WITH fwd AS (
+WITH idx AS (
+    SELECT date, open AS px FROM index_series WHERE index_code = '{benchmark}'
+),
+fwd AS (
     SELECT
         ticker, date, in_universe, tradeable, bar_status, adtv, close,
         LEAD({price_col}, 1) OVER w AS entry_px,
@@ -79,12 +89,21 @@ entry AS (
          AND date_diff('day', date, entry_date) <= {MAX_ENTRY_GAP_DAYS}) AS entry_ok
     FROM fwd
 ),
-valid AS (
+checked AS (
     SELECT *, {",".join(oks)} FROM entry
+),
+-- Benchmark levels attached to each row's own entry and exit dates. NULL
+-- before the index series begins (2019-09-12), which is what stops any
+-- benchmark-relative work from silently running on data that has none.
+valid AS (
+    SELECT v.*, ie.px AS bench_entry_px, {bench_exits}
+    FROM checked v
+    LEFT JOIN idx ie ON ie.date = v.entry_date
+    {" ".join(joins)}
 )
 SELECT
     ticker, date, entry_date, entry_px, entry_tradeable, entry_ok,
-    in_universe, adtv, close,
+    in_universe, adtv, close, bench_entry_px,
     {",".join(outs)},
     -- Primary horizon, aliased so the model and backtest need not know which.
     fwd_ret_{primary}  AS fwd_ret,
@@ -108,7 +127,8 @@ def build(verbose: bool = True) -> Path:
         raise FileNotFoundError(f"{panel_path} missing — run `vnr panel` first")
 
     target = clean_dir / "labels.parquet"
-    sql = _sql(horizons, primary, price_col).replace("{panel}", panel_path.as_posix())
+    benchmark = cfg.get("benchmark", "VNINDEX")
+    sql = _sql(horizons, primary, price_col, benchmark).replace("{panel}", panel_path.as_posix())
 
     con = duck.open_mirror()
     try:
@@ -128,6 +148,16 @@ def build(verbose: bool = True) -> Path:
                     f"    h={h:<3} labelled {ok:>8,}/{uni:,} ({100 * ok / uni:4.1f}%)"
                     f"  mean {mean:>6}%  sd {sd:>6}%"
                 )
+            benched = con.execute(
+                f"""SELECT count(*) FILTER (WHERE in_universe AND label_ok
+                                            AND bench_ret_{primary} IS NOT NULL),
+                           count(*) FILTER (WHERE in_universe AND label_ok)
+                    FROM read_parquet('{target.as_posix()}')"""
+            ).fetchone()
+            print(
+                f"  benchmarked         {benched[0]:>9,}/{benched[1]:,} "
+                f"({100 * benched[0] / benched[1]:.1f}%)  — the rest predate the index"
+            )
     finally:
         con.close()
     return target

@@ -28,10 +28,17 @@ Never modify `D:\vnstock-service`. It is finished, merged and on a scheduler.
 5. **CV must purge.** A 5-session label reaches 6 sessions forward, so training
    rows within that window of a test block share its outcome. Plain K-fold here
    reports a score that cannot be reproduced live.
-6. **Only `bar_status = 'normal'` may be filled.** Measured: allowing the rest
-   inflates total return by 136 points over 2013–2026.
+6. **Only `bar_status = 'normal'` may be filled.**
 7. **Ties must break deterministically.** `NTILE` over percentile ranks without
    a tiebreaker returns different bucket means on every run.
+8. **Never report total return alone.** Print beta, alpha and annual excess.
+   A long-only book in a rising market earns beta x index for free; summing
+   that with any real edge makes a tracker look like a strategy.
+9. **Weights are a COMPLETE vector on each rebalance date**, zeros included,
+   then forward-filled. Blanking zeros before `ffill` makes dropped positions
+   immortal — that bug reached 1,156% deployed and produced a fake 607% return.
+10. **The holdout is frozen.** Do not train on it, tune against it, or look at
+    it more than necessary. It is the only measurement development never saw.
 
 ## Things that look like bugs but are not
 
@@ -42,7 +49,10 @@ Never modify `D:\vnstock-service`. It is finished, merged and on a scheduler.
 | limit tolerance has a 0.3% floor | stored prices are ADJUSTED so not tick-aligned; a real limit-up can compute to 6.9%. Missing one is worse than over-calling one |
 | `band_anomaly` status exists | `symbols.exchange` is the CURRENT venue, so an old bar from a previous listing is judged against the wrong band |
 | exit is not required to be tradeable | requiring it would drop limit-up exits, truncating the winning tail and biasing against momentum |
-| model IC (0.098) > best single feature (0.071) | expected from combining 28 features; the leakage controls are what confirm it |
+| model IC > best single feature | expected from combining 28 features; the leakage controls are what confirm it |
+| the target is residual, not simple excess | simple excess is rank-invariant — 99.8% of rows share their day's benchmark window, so subtracting it changes no ordering. Only the beta term varies per stock |
+| holdout IC (0.123) > walk-forward IC (0.083) | not a bug. Recent years genuinely rank better; it also means nothing was overfitted to the dev period |
+| strong IC and a losing backtest | the signal is fine and the construction is not: 73.7% turnover x 0.6% round trip = 22.3%/yr against a ~19%/yr gross edge |
 
 ## Where the reasoning lives
 

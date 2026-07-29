@@ -38,6 +38,52 @@ class Result:
     def equity(self) -> pd.Series:
         return self.portfolio.value()
 
+    @property
+    def performance(self) -> dict:
+        return performance(self.equity, self.benchmark)
+
+    @property
+    def annual(self) -> pd.DataFrame:
+        return annual_table(self.equity, self.benchmark)
+
+
+def performance(equity: pd.Series, benchmark: pd.Series) -> dict:
+    """Split the return into what the market gave and what is left.
+
+    Total return on its own is not a result. A long-only book in a rising market
+    earns beta times the index for free, and reporting the sum of that and any
+    genuine edge as one number makes a tracker look like a strategy.
+    """
+    eq = equity.dropna()
+    bm = benchmark.reindex(eq.index).ffill()
+    r = pd.DataFrame({"s": eq.pct_change(), "b": bm.pct_change()}).dropna()
+    if len(r) < 60:
+        return {}
+
+    years = len(r) / 252
+    cagr_s = (1 + r["s"]).prod() ** (1 / years) - 1
+    cagr_b = (1 + r["b"]).prod() ** (1 / years) - 1
+    beta = float(np.cov(r["s"], r["b"])[0, 1] / np.var(r["b"]))
+    return {
+        "cagr": float(cagr_s),
+        "benchmark_cagr": float(cagr_b),
+        "beta": beta,
+        "market_contribution": float(beta * cagr_b),
+        "alpha": float(cagr_s - beta * cagr_b),
+        "correlation": float(r["s"].corr(r["b"])),
+        "years": float(years),
+    }
+
+
+def annual_table(equity: pd.Series, benchmark: pd.Series) -> pd.DataFrame:
+    """Year-by-year strategy vs benchmark. The table that ends arguments."""
+    eq = equity.dropna()
+    bm = benchmark.reindex(eq.index).ffill()
+    r = pd.DataFrame({"strategy": eq.pct_change(), "benchmark": bm.pct_change()}).dropna()
+    out = (1 + r).groupby(r.index.year).prod() - 1
+    out["excess"] = out["strategy"] - out["benchmark"]
+    return out
+
 
 def _price_matrices(tickers: list[str], start, end, allow_untradeable: bool):
     """Wide (date x ticker) close, execution price, and adtv matrices."""
@@ -71,11 +117,21 @@ def _target_weights(
     top_n: int,
     every: int,
     adtv: pd.DataFrame,
-    init_cash: float,
+    equity: pd.Series,
     max_adtv_frac: float,
 ) -> pd.DataFrame:
-    """Equal-weight the top N on each rebalance date, held until the next one."""
-    w = pd.DataFrame(0.0, index=dates, columns=tickers)
+    """Equal-weight the top N on each rebalance date, held until the next one.
+
+    `equity` is the portfolio value at each date, NOT the starting cash. The cap
+    is a constraint on the position's VND size, so it has to be divided by the
+    money actually being deployed. Using starting cash makes the cap loosen by
+    exactly the factor the book has compounded — a 7x gain silently turns a
+    10%-of-ADTV limit into 70%.
+    """
+    # NaN means "no instruction", which is what lets ffill carry a target
+    # between rebalances. A rebalance date writes the COMPLETE vector, zeros
+    # included, so names that dropped out are actually sold.
+    w = pd.DataFrame(np.nan, index=dates, columns=tickers)
     rebal = dates[::every]
 
     for d in rebal:
@@ -90,17 +146,19 @@ def _target_weights(
 
         # Capacity: never take more than a slice of the name's daily turnover.
         # Without this the backtest buys volume that did not exist.
-        if d in adtv.index:
-            cap = (max_adtv_frac * adtv.loc[d, picks] / init_cash).astype(float)
+        capital = float(equity.get(d, equity.iloc[0]))
+        if d in adtv.index and capital > 0:
+            cap = (max_adtv_frac * adtv.loc[d, picks] / capital).astype(float)
             sized = np.minimum(weight, cap.fillna(0.0).to_numpy())
         else:
             sized = np.full(len(picks), weight)
 
-        w.loc[d, picks] = sized
+        row = pd.Series(0.0, index=w.columns)
+        row[picks] = sized
+        w.loc[d] = row
 
-    # Hold between rebalances; a 0 row would be read as "sell everything".
-    w = w.replace(0.0, np.nan).ffill().fillna(0.0)
-    return w
+    # Carry the last full target forward; flat before the first rebalance.
+    return w.ffill().fillna(0.0)
 
 
 def run(
@@ -129,32 +187,40 @@ def run(
     tickers = [t for t in tickers if t in close.columns]
     close, price, adtv = close[tickers], price[tickers], adtv[tickers]
 
-    weights = _target_weights(
-        preds, close.index, tickers, top_n, every, adtv, init_cash, pcfg["max_adtv_frac"]
-    )
+    def _simulate(equity: pd.Series):
+        w = _target_weights(
+            preds, close.index, tickers, top_n, every, adtv, equity, pcfg["max_adtv_frac"]
+        )
+        # Signals are formed on a session's close, so they can only be acted on
+        # at the NEXT session's open. Shifting the weights is what enforces that.
+        w = w.shift(1).fillna(0.0)
+        return w, vbt.Portfolio.from_orders(
+            close=close,
+            size=w,
+            size_type="targetpercent",
+            price=price,
+            fees=costs.symmetric_fee,
+            slippage=costs.slippage,
+            init_cash=init_cash,
+            cash_sharing=True,
+            group_by=True,
+            call_seq="auto",  # sell before buy, so cash is available to rebalance
+            freq="1D",
+        )
 
-    # Signals are formed on a session's close, so they can only be acted on at
-    # the NEXT session's open. Shifting the weight matrix is what enforces that.
-    weights = weights.shift(1).fillna(0.0)
-
-    pf = vbt.Portfolio.from_orders(
-        close=close,
-        size=weights,
-        size_type="targetpercent",
-        price=price,
-        fees=costs.symmetric_fee,
-        slippage=costs.slippage,
-        init_cash=init_cash,
-        cash_sharing=True,
-        group_by=True,
-        call_seq="auto",  # sell before buy, so cash is available to rebalance
-        freq="1D",
-    )
+    # Two passes, because the capacity cap depends on portfolio value and
+    # portfolio value depends on the cap. Pass one prices the cap off starting
+    # cash; pass two re-prices it off the equity curve that produced. One
+    # iteration is enough — the cap only binds on thin names, so the feedback is
+    # small and converges rather than oscillating.
+    flat = pd.Series(init_cash, index=close.index)
+    _, first = _simulate(flat)
+    weights, pf = _simulate(first.value().reindex(close.index).ffill().fillna(init_cash))
 
     bench = _benchmark(close.index, cfg["benchmark"])
     stats = pf.stats()
     if verbose:
-        _print(stats, bench, pf, costs)
+        _print(stats, bench, pf, costs, weights)
     return Result(portfolio=pf, stats=stats, benchmark=bench, weights=weights)
 
 
@@ -170,38 +236,37 @@ def _benchmark(index: pd.DatetimeIndex, code: str) -> pd.Series:
     return s.reindex(index).ffill()
 
 
-def _cagr(first: float, last: float, years: float) -> float:
-    if years <= 0 or first <= 0:
-        return float("nan")
-    return 100 * ((last / first) ** (1 / years) - 1)
-
-
-def _print(stats: pd.Series, bench: pd.Series, pf, costs: Costs) -> None:
-    keys = [
-        "Start",
-        "End",
-        "Total Return [%]",
-        "Max Drawdown [%]",
-        "Sharpe Ratio",
-        "Sortino Ratio",
-        "Win Rate [%]",
-        "Total Trades",
-    ]
-    for k in keys:
+def _print(stats: pd.Series, bench: pd.Series, pf, costs: Costs, weights: pd.DataFrame) -> None:
+    for k in ["Start", "End", "Total Return [%]", "Max Drawdown [%]", "Sharpe Ratio"]:
         if k not in stats.index:
             continue
         v = stats[k]
-        shown = f"{v:,.2f}" if isinstance(v, (int, float, np.floating)) else str(v)
+        shown = f"{v:,.2f}" if isinstance(v, int | float | np.floating) else str(v)
         print(f"  {k:<22} {shown}")
 
-    eq = pf.value().dropna()
-    if len(eq) > 1:
-        yrs = (eq.index[-1] - eq.index[0]).days / 365.25
-        print(f"  {'Strategy CAGR [%]':<22} {_cagr(eq.iloc[0], eq.iloc[-1], yrs):,.2f}")
+    eq = pf.value()
+    perf = performance(eq, bench)
+    if perf:
+        print()
+        print("  --- decomposition (this is the result; total return is not) ---")
+        print(f"  {'CAGR [%]':<22} {100 * perf['cagr']:8.2f}")
+        print(f"  {'benchmark CAGR [%]':<22} {100 * perf['benchmark_cagr']:8.2f}")
+        print(f"  {'beta':<22} {perf['beta']:8.2f}")
+        print(f"  {'correlation':<22} {perf['correlation']:8.2f}")
+        print(f"  {'market gave [%]':<22} {100 * perf['market_contribution']:8.2f}")
+        print(f"  {'ALPHA [%]':<22} {100 * perf['alpha']:8.2f}  <- what is left")
+        print()
+        print("  --- annual ---")
+        for yr, row in annual_table(eq, bench).iterrows():
+            flag = "  <-- negative" if row["excess"] < 0 else ""
+            print(
+                f"   {yr}  strat {100 * row['strategy']:7.1f}%"
+                f"   bench {100 * row['benchmark']:7.1f}%"
+                f"   excess {100 * row['excess']:7.1f}%{flag}"
+            )
 
-    b = bench.dropna()
-    if len(b) > 1:
-        yrs = (b.index[-1] - b.index[0]).days / 365.25
-        print(f"  {'VNINDEX Total [%]':<22} {100 * (b.iloc[-1] / b.iloc[0] - 1):,.2f}")
-        print(f"  {'VNINDEX CAGR [%]':<22} {_cagr(b.iloc[0], b.iloc[-1], yrs):,.2f}")
-    print(f"  {'round-trip cost':<22} {100 * costs.round_trip:.2f}%")
+    # Capped positions leave cash idle. Realistic, but it has to be visible: a
+    # book that is only half deployed is not the strategy you think you ran.
+    print()
+    print(f"  {'avg deployed [%]':<22} {100 * weights.sum(axis=1).mean():8.1f}")
+    print(f"  {'round-trip cost [%]':<22} {100 * costs.round_trip:8.2f}")
