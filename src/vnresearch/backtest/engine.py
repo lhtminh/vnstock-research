@@ -23,6 +23,7 @@ import pandas as pd
 import vectorbt as vbt
 
 from vnresearch import config
+from vnresearch.backtest import rebalance
 from vnresearch.backtest.costs import Costs
 from vnresearch.io import duck
 
@@ -119,6 +120,7 @@ def _target_weights(
     adtv: pd.DataFrame,
     equity: pd.Series,
     max_adtv_frac: float,
+    exit_rank: int | None = None,
 ) -> pd.DataFrame:
     """Equal-weight the top N on each rebalance date, held until the next one.
 
@@ -133,13 +135,10 @@ def _target_weights(
     # included, so names that dropped out are actually sold.
     w = pd.DataFrame(np.nan, index=dates, columns=tickers)
     rebal = dates[::every]
+    chosen = rebalance.select(preds, rebal, top_n, exit_rank)
 
     for d in rebal:
-        day = preds[preds["date"] == d]
-        if day.empty:
-            continue
-        picks = day.nlargest(top_n, "pred")["ticker"].tolist()
-        picks = [t for t in picks if t in w.columns]
+        picks = [t for t in chosen.get(d, []) if t in w.columns]
         if not picks:
             continue
         weight = 1.0 / len(picks)
@@ -166,14 +165,23 @@ def run(
     allow_untradeable_fills: bool = False,
     top_n: int | None = None,
     verbose: bool = True,
+    costs: Costs | None = None,
+    rebalance_every: int | None = None,
+    exit_rank: int | None = None,
 ) -> Result:
-    """Backtest out-of-sample predictions (date, ticker, pred)."""
+    """Backtest out-of-sample predictions (date, ticker, pred).
+
+    `costs` and `rebalance_every` override the config so the same predictions
+    can be run under different frictions. Running with zero costs is the way to
+    separate "the signal is wrong" from "the wrapper is too expensive" — they
+    look identical in a single equity curve.
+    """
     cfg = config.load("backtest")
     pcfg = cfg["portfolio"]
     top_n = top_n or pcfg["top_n"]
-    every = pcfg["rebalance_every"]
+    every = rebalance_every or pcfg["rebalance_every"]
     init_cash = float(pcfg["init_cash"])
-    costs = Costs.load()
+    costs = costs if costs is not None else Costs.load()
 
     preds = oos.copy()
     preds["date"] = pd.to_datetime(preds["date"])
@@ -187,9 +195,19 @@ def run(
     tickers = [t for t in tickers if t in close.columns]
     close, price, adtv = close[tickers], price[tickers], adtv[tickers]
 
+    exit_rank = exit_rank if exit_rank is not None else pcfg.get("exit_rank")
+
     def _simulate(equity: pd.Series):
         w = _target_weights(
-            preds, close.index, tickers, top_n, every, adtv, equity, pcfg["max_adtv_frac"]
+            preds,
+            close.index,
+            tickers,
+            top_n,
+            every,
+            adtv,
+            equity,
+            pcfg["max_adtv_frac"],
+            exit_rank,
         )
         # Signals are formed on a session's close, so they can only be acted on
         # at the NEXT session's open. Shifting the weights is what enforces that.

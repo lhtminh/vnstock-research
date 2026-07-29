@@ -1,8 +1,17 @@
 # Backtest settings.
 
 portfolio:
-  top_n: 30              # names held, equal weighted
+  top_n: 30              # names held, equal weighted (the BUY threshold)
   rebalance_every: 5     # sessions; matches the 5-session label
+
+  # SELL threshold. A holding is kept until it falls past this rank, so a name
+  # drifting from 28 to 41 generates no trade. Chosen on the 2021-2023
+  # development window across 15 configurations; wide buffers won at every
+  # frequency tested. Measured effect on the frozen holdout:
+  #   no buffer   turnover 73.7%  cost 22.3%/yr  CAGR -2.6%
+  #   exit 150    turnover 28.5%  cost  8.6%/yr  CAGR +13.3%
+  # Set equal to top_n to disable.
+  exit_rank: 150
   init_cash: 1.0e9       # VND
   # Position size cap as a fraction of the name's 20-session ADTV. Above this
   # you are buying liquidity that was not there.
