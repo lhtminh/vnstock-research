@@ -65,6 +65,11 @@ DEFAULT_BAND = 0.15  # unknown exchange: assume the widest, so we under-claim li
 # Used for data-quality flags only, never to classify a limit.
 MAX_LEGAL_MOVE = 0.155
 
+# The same idea for an INDEX, which is stricter: a broad index averages hundreds
+# of names, each individually capped, so it cannot move like a single stock.
+# Four VNINDEX prints break this (+120%, +84%, -55%, -43%) and are bad data.
+MAX_INDEX_MOVE = 0.10
+
 # Below this price one minimum tick is a large fraction of the band, so the
 # limit test stops being meaningful. Matches vn-audit's exclusion.
 MIN_PRICE_FOR_BAND = 1000.0

@@ -23,8 +23,9 @@ import pandas as pd
 import vectorbt as vbt
 
 from vnresearch import config
-from vnresearch.backtest import rebalance
+from vnresearch.backtest import rebalance, risk
 from vnresearch.backtest.costs import Costs
+from vnresearch.clean.bands import MAX_INDEX_MOVE
 from vnresearch.io import duck
 
 
@@ -168,6 +169,7 @@ def run(
     costs: Costs | None = None,
     rebalance_every: int | None = None,
     exit_rank: int | None = None,
+    exposure: pd.Series | None = None,
 ) -> Result:
     """Backtest out-of-sample predictions (date, ticker, pred).
 
@@ -197,6 +199,22 @@ def run(
 
     exit_rank = exit_rank if exit_rank is not None else pcfg.get("exit_rank")
 
+    # Risk overlay. Scales the whole book up or down without touching WHICH
+    # names it holds — the 2008 stress test showed the ranking was fine and the
+    # exposure was not, so the two are kept separable.
+    rcfg = cfg.get("risk") or {}
+    if exposure is None and rcfg.get("enabled"):
+        bench_level = _benchmark(close.index, cfg["benchmark"])
+        exposure = risk.combined_exposure(
+            bench_level,
+            target_vol=rcfg.get("target_vol"),
+            vol_window=rcfg.get("vol_window", 60),
+            trend_window=rcfg.get("trend_window"),
+            risk_off=rcfg.get("risk_off", 0.0),
+        )
+    if exposure is not None:
+        exposure = exposure.reindex(close.index).ffill().fillna(1.0).clip(0.0, 1.0)
+
     def _simulate(equity: pd.Series):
         w = _target_weights(
             preds,
@@ -212,6 +230,8 @@ def run(
         # Signals are formed on a session's close, so they can only be acted on
         # at the NEXT session's open. Shifting the weights is what enforces that.
         w = w.shift(1).fillna(0.0)
+        if exposure is not None:
+            w = w.mul(exposure, axis=0)
         return w, vbt.Portfolio.from_orders(
             close=close,
             size=w,
@@ -243,6 +263,17 @@ def run(
 
 
 def _benchmark(index: pd.DatetimeIndex, code: str) -> pd.Series:
+    """The benchmark level, with impossible prints removed.
+
+    VNINDEX carries four bad closes (2007-07-23/24, 2008-08-16/19) implying
+    daily moves of -55%, +120%, +84% and -43%. A broad index cannot do that, and
+    leaving them in puts a spike in the curve every beta, correlation and excess
+    return in the report is measured against.
+
+    A defective bar is dropped and the level carried forward, rather than
+    interpolated: forward-filling states "we do not know it changed", which is
+    true, where an interpolated level would invent a move.
+    """
     con = duck.open_mirror()
     try:
         df = con.execute(
@@ -250,7 +281,10 @@ def _benchmark(index: pd.DatetimeIndex, code: str) -> pd.Series:
         ).df()
     finally:
         con.close()
-    s = df.set_index(pd.to_datetime(df["date"]))["close"]
+    s = df.set_index(pd.to_datetime(df["date"]))["close"].astype(float)
+    bad = s.pct_change().abs() > MAX_INDEX_MOVE
+    if bad.any():
+        s = s.mask(bad).ffill()
     return s.reindex(index).ffill()
 
 

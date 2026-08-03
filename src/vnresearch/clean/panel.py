@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from vnresearch import config
+from vnresearch.clean import bands
 from vnresearch.io import duck
 
 # Statuses a backtest may transact on. Everything else either had no
@@ -41,10 +42,27 @@ WITH bars AS (
                 THEN NULL ELSE ret END AS ret
     FROM read_parquet('{{bars}}')
 ),
+-- The benchmark, with impossible prints removed.
+--
+-- A broad index cannot move 10% in a session: it is an average of hundreds of
+-- names, each capped at its own band. Four VNINDEX bars break that — 2007-07-23
+-- at -54.6%, 2007-07-24 at +120.5%, 2008-08-16 at +84.1% (a SATURDAY), and
+-- 2008-08-19 at -43.2%. They are bad prints, not market moves.
+--
+-- They matter far beyond the four days. mkt_ret feeds beta_60, alpha_60,
+-- idio_vol_60 and every excess_ret, so one defect corrupts a 60-session window
+-- around it, and it enters the residual target directly. These dates sat
+-- outside the sample until it was extended back to 2004, which is exactly the
+-- kind of thing extending a sample drags in.
+--
+-- Nulled rather than repaired: the true level is unknown, and a guessed one
+-- would propagate silently where a NULL simply removes the observation.
 mkt AS (
-    SELECT date,
-           close / NULLIF(LAG(close) OVER (ORDER BY date), 0) - 1 AS mkt_ret
-    FROM index_series WHERE index_code = 'VNINDEX'
+    SELECT date, CASE WHEN abs(r) <= {bands.MAX_INDEX_MOVE} THEN r END AS mkt_ret
+    FROM (
+        SELECT date, close / NULLIF(LAG(close) OVER (ORDER BY date), 0) - 1 AS r
+        FROM index_series WHERE index_code = 'VNINDEX'
+    )
 ),
 -- Dilution events: ESOP, rights issues and private placements, which sell NEW
 -- shares and shrink every existing holder's stake. Stock dividends and bonus
