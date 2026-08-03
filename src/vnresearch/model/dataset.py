@@ -77,7 +77,9 @@ def load(
         elif not include_holdout:
             where.append(f"date < DATE '{holdout}'")
 
-    con = open_joined()
+    # include_holdout=True because this function does its own holdout filtering
+    # below — the view must not have already removed the rows holdout_only wants.
+    con = open_joined(include_holdout=True)
     try:
         df = con.execute(
             f"""

@@ -25,6 +25,14 @@ features:
   momentum_windows: [5, 21, 63, 126, 252]
   vol_windows: [21, 63]
   beta_window: 60
-  # Winsorize cross-sectional features at these percentiles before ranking,
-  # so one broken print cannot dominate a day's z-scores.
-  winsor: [0.01, 0.99]
+
+  # There is deliberately NO winsor setting here, and it should not come back.
+  #
+  # This file used to declare `winsor: [0.01, 0.99]` and nothing read it. That
+  # was lucky rather than an oversight worth fixing: the model consumes RANKS,
+  # and clipping is a monotonic transform, so winsorizing before ranking cannot
+  # change a single ordering. Verified — rank([1,2,3,4,1000]) and its clipped
+  # version are identical.
+  #
+  # Winsorization only matters for z-scores. If a z-scored feature is ever
+  # added, add it there and nowhere else.

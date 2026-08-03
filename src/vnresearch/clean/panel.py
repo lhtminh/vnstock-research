@@ -26,7 +26,20 @@ def _sql(adtv_window: int, adtv_min: float, require_full: bool) -> str:
     full_window = f"AND obs = {adtv_window}" if require_full else ""
     return f"""
 WITH bars AS (
-    SELECT * FROM read_parquet('{{bars}}')
+    -- A bar the classifier could not vouch for is barred from TRADING by
+    -- `tradeable`, but that alone left its return feeding every window built on
+    -- it. A suspect_move is a feed defect — some reach +682% — and one of those
+    -- inside a 252-session volatility estimate corrupts the whole year.
+    --
+    -- Only `ret` is nulled, not `close`: the price is still needed to value a
+    -- position and to compute turnover. Momentum features read `close`
+    -- directly, so a defect that lands on a window ENDPOINT can still reach
+    -- them; that residual is accepted because the affected bars are 0.55% of
+    -- the panel and the alternative breaks the LAG chain everywhere.
+    SELECT * EXCLUDE (ret),
+           CASE WHEN bar_status IN ('suspect_move', 'band_anomaly', 'suspect_ohlc')
+                THEN NULL ELSE ret END AS ret
+    FROM read_parquet('{{bars}}')
 ),
 mkt AS (
     SELECT date,

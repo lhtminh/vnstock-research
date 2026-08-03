@@ -77,6 +77,7 @@ def walk_forward(
     data: ds.Dataset | None = None,
     horizon: int | None = None,
     verbose: bool = True,
+    params: dict | None = None,
 ) -> Run:
     cfg = config.load("model")["cv"]
     horizon = horizon or config.load("features")["label"]["horizon"]
@@ -91,7 +92,7 @@ def walk_forward(
 
     folds, importances, oos = [], [], []
     for i, (tr, te) in enumerate(splitter.split(data.dates)):
-        model = make_model(model_name)
+        model = make_model(model_name, params)
         model.fit(data.X.iloc[tr], data.y.iloc[tr])
         pred = model.predict(data.X.iloc[te])
 
