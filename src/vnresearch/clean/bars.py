@@ -34,16 +34,31 @@ _TICK_SQL = """
     END
 """
 
+
+# Date-dependent, because the bands widened on 2013-01-15 (see bands.py). Using
+# today's numbers on a 2010 bar reclassifies every real limit-up as an ordinary
+# session and lets the backtest fill where there was no offer side.
+#
 # Cast to DOUBLE: bare decimal literals bind as DECIMAL in DuckDB, which then
 # mixes with the DOUBLE returns in every comparison below.
-_BAND_SQL = f"""
-    CASE s.exchange
-        WHEN 'HOSE'  THEN {bands.BANDS["HOSE"]}::DOUBLE
-        WHEN 'HNX'   THEN {bands.BANDS["HNX"]}::DOUBLE
-        WHEN 'UPCOM' THEN {bands.BANDS["UPCOM"]}::DOUBLE
-        ELSE {bands.DEFAULT_BAND}::DOUBLE
+def _band_sql() -> str:
+    def table(d: dict[str, float]) -> str:
+        return f"""CASE s.exchange
+            WHEN 'HOSE'  THEN {d["HOSE"]}::DOUBLE
+            WHEN 'HNX'   THEN {d["HNX"]}::DOUBLE
+            WHEN 'UPCOM' THEN {d["UPCOM"]}::DOUBLE
+            ELSE {bands.DEFAULT_BAND}::DOUBLE
+        END"""
+
+    return f"""
+    CASE WHEN lagged.date < DATE '{bands.BAND_REFORM}'
+         THEN {table(bands.BANDS_BEFORE)}
+         ELSE {table(bands.BANDS_AFTER)}
     END
 """
+
+
+_BAND_SQL = _band_sql()
 
 
 def _sql() -> str:

@@ -73,9 +73,54 @@ def test_sql_tick_matches_python():
 
 
 def test_sql_band_matches_python():
+    """Every exchange, on both sides of the 2013 reform."""
     con = duckdb.connect()
     for exchange in ["HOSE", "HNX", "UPCOM", "SOMETHING_ELSE"]:
-        sql = bars._BAND_SQL.replace("s.exchange", f"'{exchange}'")
+        for date in ["2010-06-01", "2020-06-01"]:
+            sql = bars._BAND_SQL.replace("s.exchange", f"'{exchange}'").replace(
+                "lagged.date", f"DATE '{date}'"
+            )
+            got = con.execute(f"SELECT {sql}").fetchone()[0]
+            assert got == pytest.approx(bands.band(exchange, date)), f"{exchange} {date}"
+    con.close()
+
+
+def test_bands_widened_in_2013():
+    """Limits are not constant: on 2013-01-15 every band widened.
+
+    Verified from the data before being encoded — positive HOSE returns pile up
+    in the 4.5-5.0% bucket through 2012 and in 6.5-7.0% from 2013, and HNX hands
+    over from ~7% to ~10% in the same month. Applying today's 7% to a 2010 bar
+    reclassifies 66,245 genuinely limit-locked sessions as ordinary ones, which
+    the backtest would then fill.
+    """
+    assert bands.band("HOSE", "2010-06-01") == 0.05
+    assert bands.band("HOSE", "2020-06-01") == 0.07
+    assert bands.band("HNX", "2010-06-01") == 0.07
+    assert bands.band("HNX", "2020-06-01") == 0.10
+    assert bands.band("UPCOM", "2010-06-01") == 0.10
+    assert bands.band("UPCOM", "2020-06-01") == 0.15
+
+
+def test_band_reform_boundary_is_exact():
+    assert bands.band("HOSE", "2013-01-14") == 0.05
+    assert bands.band("HOSE", "2013-01-15") == 0.07
+
+
+def test_band_without_a_date_is_the_current_regime():
+    """Callers asking about today should not have to know the history."""
+    assert bands.band("HOSE") == 0.07
+    assert bands.band("HNX") == 0.10
+
+
+def test_sql_band_is_date_aware():
+    """bars.py generates its own SQL; it must agree with band() on both eras."""
+    con = duckdb.connect()
+    for date, expected in [("2010-06-01", 0.05), ("2020-06-01", 0.07)]:
+        sql = bars._BAND_SQL.replace("s.exchange", "'HOSE'").replace(
+            "lagged.date", f"DATE '{date}'"
+        )
         got = con.execute(f"SELECT {sql}").fetchone()[0]
-        assert got == pytest.approx(bands.band(exchange)), exchange
+        assert got == pytest.approx(expected), f"{date}: got {got}, want {expected}"
+        assert got == pytest.approx(bands.band("HOSE", date))
     con.close()

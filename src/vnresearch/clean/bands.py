@@ -20,8 +20,25 @@ Both are handled by classifying conservatively: anything we cannot judge gets
 
 from __future__ import annotations
 
-# Daily price limit by exchange, as a fraction of the reference price.
-BANDS = {"HOSE": 0.07, "HNX": 0.10, "UPCOM": 0.15}
+# Daily price limits, and they are NOT constant through history.
+#
+# On 2013-01-15 the regulator widened every band: HOSE 5% -> 7%, HNX 7% -> 10%,
+# UPCOM 10% -> 15%. Applying today's numbers to older bars silently reclassifies
+# every genuine limit-up as an ordinary session, and the backtest then fills on
+# a day that had no offer side — exactly the error bar_status exists to prevent.
+#
+# Verified from the data rather than taken on trust. Positive HOSE returns pile
+# up in the 4.5-5.0% bucket through 2012 (6.1% of all returns in 2010) and in
+# the 6.5-7.0% bucket from 2013 (3.9% in 2020), and the two swap over during
+# January 2013. HNX shows the same handover from ~7% to ~10% in the same month.
+BAND_REFORM = "2013-01-15"
+
+BANDS_BEFORE = {"HOSE": 0.05, "HNX": 0.07, "UPCOM": 0.10}
+BANDS_AFTER = {"HOSE": 0.07, "HNX": 0.10, "UPCOM": 0.15}
+
+# Kept as the current-era alias so callers that do not care about history read
+# naturally; band() below is the one that knows about the reform.
+BANDS = BANDS_AFTER
 DEFAULT_BAND = 0.15  # unknown exchange: assume the widest, so we under-claim limits
 
 # Cross-exchange threshold for "this move is too big to be legal anywhere".
@@ -49,9 +66,16 @@ MIN_TOLERANCE = 0.003
 MAX_TOLERANCE = 0.02
 
 
-def band(exchange: str | None) -> float:
-    """Price limit for an exchange."""
-    return BANDS.get(exchange or "", DEFAULT_BAND)
+def band(exchange: str | None, date=None) -> float:
+    """Price limit for an exchange on a given date.
+
+    date=None means the current regime, which is what a caller asking about
+    today wants. Anything reasoning over history must pass the bar's own date.
+    """
+    table = BANDS_AFTER
+    if date is not None and str(date)[:10] < BAND_REFORM:
+        table = BANDS_BEFORE
+    return table.get(exchange or "", DEFAULT_BAND)
 
 
 def tick_size(price: float, exchange: str | None) -> int:
