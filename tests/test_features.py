@@ -49,6 +49,20 @@ def _synthetic_panel(tmp_path, n_days=400, n_tickers=6, seed=0) -> str:
                     "tradeable": True,
                     "in_universe": True,
                     "mkt_ret": mkt[i],
+                    # Trailing-year share issuance, joined in by the panel.
+                    # Non-zero so the feature is exercised rather than skipped.
+                    "dilution_252": 0.01 * (i % 5),
+                    # Seasonality and peer columns, also joined in upstream.
+                    # Varied per ticker and date so the features actually
+                    # produce values instead of a constant the tests cannot see.
+                    "seas_month": 0.0002 * ((t + i) % 7 - 3),
+                    "seas_tet": 0.0003 * ((t + i) % 5 - 2),
+                    "days_from_tet": (i % 250) - 20,
+                    "peer_ret_1": 0.7 * mkt[i],
+                    "peer_ret_5": 0.7 * mkt[max(i - 4, 0) : i + 1].sum(),
+                    "peer_ret_21": 0.7 * mkt[max(i - 20, 0) : i + 1].sum(),
+                    "peer_corr": 0.3 + 0.01 * (t % 5),
+                    "peer_n": 10,
                 }
             )
             prev = px
@@ -58,7 +72,7 @@ def _synthetic_panel(tmp_path, n_days=400, n_tickers=6, seed=0) -> str:
 
 
 def _compute(panel_path: str) -> pd.DataFrame:
-    sql, _ = build._raw_sql(panel_path)
+    sql, _ = build._raw_sql(panel_path, join_peers=False)
     con = duckdb.connect()
     try:
         return con.execute(sql).df()

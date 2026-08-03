@@ -45,3 +45,21 @@ register(
     _CAT,
     21,
 )
+
+# Net share issuance over the trailing year: how much the share count grew
+# through ESOP tranches, rights issues and private placements — issuance the
+# existing holder did not take part in and is diluted by.
+#
+# One of the few genuinely STOCK-LEVEL facts in this registry that is not
+# derived from price or volume, which is precisely why it is worth having.
+# Firms that issue shares tend to underperform; the effect is well documented
+# and it is not visible anywhere in an OHLCV series.
+#
+# Computed in the panel because the events are sparse and have to be joined to
+# the date grid before a window can run over them. Stock dividends and bonus
+# issues are deliberately excluded — see v_share_events for why.
+#
+# Coverage is thin until the weekly corporate-action sweep finishes: 48 of
+# 1,698 tickers as of 2026-08-03. A NULL here means "not yet fetched", never
+# "no issuance".
+register("net_issuance_252", "dilution_252", _CAT, 1)

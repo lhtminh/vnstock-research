@@ -33,30 +33,166 @@ mkt AS (
            close / NULLIF(LAG(close) OVER (ORDER BY date), 0) - 1 AS mkt_ret
     FROM index_series WHERE index_code = 'VNINDEX'
 ),
+-- Dilution events: ESOP, rights issues and private placements, which sell NEW
+-- shares and shrink every existing holder's stake. Stock dividends and bonus
+-- issues are excluded upstream in v_share_events — they multiply the share
+-- count and divide the price by the same factor, so the holder's stake is
+-- unchanged and the adjusted price series already accounts for it.
+--
+-- Keyed on knowable_date, not ex_date: the market cannot react to an issue
+-- before it is announced.
+--
+-- Summed as logs because several events can land on one date and the effect
+-- compounds; the rolling window below turns that back into a multiplier.
+ev AS (
+    SELECT ticker, knowable_date AS date, SUM(LN(share_multiplier)) AS log_mult
+    FROM v_share_events
+    WHERE is_dilutive AND share_multiplier > 0
+    GROUP BY ticker, knowable_date
+),
+-- Tet, derived rather than hard-coded. It moves on the lunar calendar between
+-- late January and mid-February, so no fixed date or month works — but it is
+-- always the market's longest closure of the year, which the calendar already
+-- knows. Taking the largest January-to-March gap per year finds it without a
+-- lunar library.
+gaps AS (
+    SELECT date,
+           date_diff('day', LAG(date) OVER (ORDER BY date), date) AS gap,
+           date_part('year', date) AS yr
+    FROM (SELECT DISTINCT date FROM trading_calendar WHERE is_trading_day)
+),
+tet AS (
+    SELECT yr, max_by(date, gap) AS resume_date
+    FROM gaps
+    WHERE gap IS NOT NULL AND date_part('month', date) BETWEEN 1 AND 3
+    GROUP BY yr
+),
+-- Per-ticker calendar-month returns, the raw material for seasonality.
+monthly AS (
+    SELECT ticker,
+           date_part('year', date)  AS yr,
+           date_part('month', date) AS mo,
+           AVG(ret) AS m_ret
+    FROM bars
+    WHERE ret IS NOT NULL
+    GROUP BY 1, 2, 3
+),
+-- Per-ticker behaviour in the Tet window, one number per year.
+--
+-- This has to be per TICKER. Distance to Tet on its own is the same for every
+-- stock on a date, so it cannot rank one above another — and multiplying
+-- another feature by it does not help either, since a positive day-constant
+-- leaves within-day ordering exactly as it was. Only "how does THIS stock
+-- behave around Tet" varies across the cross-section.
+tet_yearly AS (
+    SELECT b.ticker,
+           date_part('year', b.date) AS yr,
+           AVG(b.ret) AS t_ret
+    FROM bars b
+    JOIN tet t ON t.yr = date_part('year', b.date)
+    WHERE b.ret IS NOT NULL
+      AND date_diff('day', t.resume_date, b.date) BETWEEN -14 AND 14
+    GROUP BY 1, 2
+),
+tet_seas AS (
+    SELECT ticker, yr,
+           AVG(t_ret) OVER w AS seas_tet,
+           COUNT(t_ret) OVER w AS tet_obs
+    FROM tet_yearly
+    WINDOW w AS (
+        PARTITION BY ticker ORDER BY yr
+        ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING   -- prior years only
+    )
+),
+-- This ticker's own tendency in this calendar month, from PRIOR YEARS ONLY.
+--
+-- The frame is `5 PRECEDING AND 1 PRECEDING`: the current year is excluded, so
+-- a February 2020 row is scored on February 2015-2019 and cannot see itself.
+-- That exclusion is the whole point — including the current year would leak the
+-- outcome into the feature.
+--
+-- Why this and not a month dummy: "it is February" is the same value for every
+-- stock on the date, and a cross-sectional model cannot rank one stock above
+-- another on a day-constant. "THIS stock usually does well in February" varies
+-- across the universe, which is what makes it rankable.
+seas AS (
+    SELECT ticker, yr, mo,
+           AVG(m_ret) OVER (
+               PARTITION BY ticker, mo ORDER BY yr
+               ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+           ) AS seas_month,
+           COUNT(m_ret) OVER (
+               PARTITION BY ticker, mo ORDER BY yr
+               ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+           ) AS seas_obs
+    FROM monthly
+),
 liq AS (
     SELECT
         b.*,
+        COALESCE(ev.log_mult, 0.0) AS log_mult,
         -- No matched value in the source, so turnover is a close*volume proxy.
         -- It overstates limit-locked days and ignores put-through entirely.
         b.close * b.volume AS turnover,
         AVG(b.close * b.volume) OVER w AS adtv,
         COUNT(b.close * b.volume) OVER w AS obs
     FROM bars b
+    LEFT JOIN ev ON ev.ticker = b.ticker AND ev.date = b.date
     WINDOW w AS (
         PARTITION BY b.ticker ORDER BY b.date
         ROWS BETWEEN {adtv_window - 1} PRECEDING AND CURRENT ROW
     )
+),
+dil AS (
+    SELECT
+        liq.*,
+        -- Trailing-year dilution as a fraction: 0.05 means the share count grew
+        -- 5% through issuance a holder did not participate in. Backward-only,
+        -- like every other window here.
+        EXP(SUM(log_mult) OVER (
+            PARTITION BY ticker ORDER BY date
+            ROWS BETWEEN 251 PRECEDING AND CURRENT ROW
+        )) - 1 AS dilution_252
+    FROM liq
+),
+seasoned AS (
+    SELECT
+        dil.*,
+        -- NULL until five prior same-month observations exist, rather than an
+        -- average of two noisy years dressed up as a seasonal effect.
+        CASE WHEN s.seas_obs >= 3 THEN s.seas_month END AS seas_month,
+        -- This ticker's own Tet behaviour, from prior years. Applied only
+        -- NEAR Tet: away from the holiday it describes nothing, and carrying
+        -- it year-round would just add a stale constant per ticker.
+        CASE WHEN ts.tet_obs >= 3
+              AND ABS(date_diff('day', t.resume_date, dil.date)) <= 21
+             THEN ts.seas_tet END AS seas_tet,
+        -- Signed distance to the Tet reopening: negative before, positive
+        -- after. Day-constant, so it is NOT registered as a feature — it is
+        -- kept because seas_tet is built from it and because it makes the
+        -- holiday visible when eyeballing the panel.
+        date_diff('day', t.resume_date, dil.date) AS days_from_tet
+    FROM dil
+    LEFT JOIN seas s
+           ON s.ticker = dil.ticker
+          AND s.yr = date_part('year', dil.date)
+          AND s.mo = date_part('month', dil.date)
+    LEFT JOIN tet t ON t.yr = date_part('year', dil.date)
+    LEFT JOIN tet_seas ts
+           ON ts.ticker = dil.ticker
+          AND ts.yr = date_part('year', dil.date)
 )
 SELECT
-    liq.ticker, liq.date, liq.open, liq.high, liq.low, liq.close, liq.volume,
-    liq.exchange, liq.symbol_status, liq.bar_status, liq.prev_close, liq.ret,
-    liq.turnover, liq.adtv, liq.obs AS adtv_obs,
-    (liq.bar_status = '{TRADEABLE}') AS tradeable,
-    (liq.adtv >= {adtv_min} {full_window}) AS in_universe,
+    s.ticker, s.date, s.open, s.high, s.low, s.close, s.volume,
+    s.exchange, s.symbol_status, s.bar_status, s.prev_close, s.ret,
+    s.turnover, s.adtv, s.obs AS adtv_obs, s.dilution_252,
+    s.seas_month, s.seas_tet, s.days_from_tet,
+    (s.bar_status = '{TRADEABLE}') AS tradeable,
+    (s.adtv >= {adtv_min} {full_window}) AS in_universe,
     mkt.mkt_ret
-FROM liq
-LEFT JOIN mkt ON mkt.date = liq.date
-ORDER BY liq.ticker, liq.date
+FROM seasoned s
+LEFT JOIN mkt ON mkt.date = s.date
+ORDER BY s.ticker, s.date
 """
 
 

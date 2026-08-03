@@ -49,7 +49,7 @@ def register(name: str, sql: str, category: str, lookback: int) -> Feature:
 
 def all_features() -> dict[str, Feature]:
     # Import for side effects: each module registers on import.
-    from vnresearch.features import market, momentum, price, volume  # noqa: F401
+    from vnresearch.features import cluster, market, momentum, price, volume  # noqa: F401
 
     return dict(_REGISTRY)
 

@@ -16,9 +16,19 @@ dataset:
   # name that rose merely because it is high beta and the market rose.
   target: residual
 
-  # index_series starts 2019-09-12. Anything benchmark-relative before that has
-  # no benchmark, so this is a hard floor, not a preference.
-  start_date: "2019-09-12"
+  # 2009, not 2004, and the reason is liquidity rather than benchmark coverage.
+  #
+  # index_series was extended back to 2004-01-05, so a benchmark now exists for
+  # the whole span. What does not exist is a cross-section to rank: measured,
+  # 2004 had 14 tickers trading and NONE above the 1bn VND ADTV floor, 2005 had
+  # 25 and none, 2006 had 22 liquid names, and 2008 — the -66% year — had 30,
+  # exactly the minimum a daily cross-sectional statistic needs. 2009 is the
+  # first year with a real universe (117 liquid names), and by 2010 it is 180.
+  #
+  # 2008 is deliberately left OUT of training and kept as a stress test. A
+  # 30-name market with different price limits and settlement is structurally
+  # unlike today's; a model should be MEASURED against it, not fitted to it.
+  start_date: "2009-01-01"
 
   # FROZEN HOLDOUT. Excluded from load() unless explicitly requested. The
   # pipeline was developed while watching results, so the walk-forward score is
