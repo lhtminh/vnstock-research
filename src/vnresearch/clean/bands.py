@@ -36,6 +36,26 @@ BAND_REFORM = "2013-01-15"
 BANDS_BEFORE = {"HOSE": 0.05, "HNX": 0.07, "UPCOM": 0.10}
 BANDS_AFTER = {"HOSE": 0.07, "HNX": 0.10, "UPCOM": 0.15}
 
+# The 2008 emergency, when the regulator repeatedly narrowed and then rewidened
+# the limits to slow the crash. Visible in the data at weekly resolution: the
+# 99th percentile of |return| on HOSE sits at 5.1% through 2008-03-24, drops to
+# 2.02% the week of 03-31, runs at 2.9-3.1% into June, drifts up through 3.4-3.9%
+# over the summer, and is back to 5.1% by 08-18.
+#
+# The exact schedule is NOT encoded, because reconstructing several successive
+# changes from a percentile would be guesswork dressed as fact — and guessing
+# TOO WIDE is the dangerous direction, since a limit-locked bar would then read
+# as tradeable. The whole window is marked band-unknown instead, so those bars
+# are excluded from trading rather than mis-sized.
+BAND_UNKNOWN_PERIODS = [("2008-03-25", "2008-08-18")]
+
+
+def band_known(date) -> bool:
+    """False where the operative price limit cannot be stated with confidence."""
+    d = str(date)[:10]
+    return not any(lo <= d < hi for lo, hi in BAND_UNKNOWN_PERIODS)
+
+
 # Kept as the current-era alias so callers that do not care about history read
 # naturally; band() below is the one that knows about the reform.
 BANDS = BANDS_AFTER

@@ -16,7 +16,9 @@ def feature_names(ranked: bool = True) -> list[str]:
     return [f"{n}_rank" for n in names] if ranked else names
 
 
-def open_joined(include_holdout: bool = False) -> duckdb.DuckDBPyConnection:
+def open_joined(
+    include_holdout: bool = False, apply_start: bool = True
+) -> duckdb.DuckDBPyConnection:
     """Connection with a `d` view: features joined to labels on (ticker, date).
 
     THE HOLDOUT IS EXCLUDED BY DEFAULT, and this was a real defect before it
@@ -27,6 +29,11 @@ def open_joined(include_holdout: bool = False) -> duckdb.DuckDBPyConnection:
     deciding to.
 
     Pass include_holdout=True only for a deliberate final measurement.
+
+    apply_start=False lifts the configured start date, which the 2008 stress
+    test needs: that window sits BEFORE the training sample begins and would
+    otherwise be filtered away by the very setting that excludes it from
+    training.
     """
     feats = config.path("data/features/features.parquet")
     labels = config.path("data/clean/labels.parquet")
@@ -36,7 +43,7 @@ def open_joined(include_holdout: bool = False) -> duckdb.DuckDBPyConnection:
 
     cfg = config.load("model")["dataset"]
     where = ["f.in_universe"]
-    if cfg.get("start_date"):
+    if apply_start and cfg.get("start_date"):
         where.append(f"f.date >= DATE '{cfg['start_date']}'")
     holdout = cfg.get("holdout_start")
     if holdout and not include_holdout:

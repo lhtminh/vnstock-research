@@ -61,6 +61,15 @@ def _band_sql() -> str:
 _BAND_SQL = _band_sql()
 
 
+def _band_unknown_sql() -> str:
+    """True on dates whose operative price limit cannot be stated. See bands.py."""
+    if not bands.BAND_UNKNOWN_PERIODS:
+        return "false"
+    return " OR ".join(
+        f"(b.date >= DATE '{lo}' AND b.date < DATE '{hi}')" for lo, hi in bands.BAND_UNKNOWN_PERIODS
+    )
+
+
 def _sql() -> str:
     return f"""
 WITH lagged AS (
@@ -89,10 +98,13 @@ t AS (
         b.*,
         LEAST(GREATEST(b.tick / NULLIF(b.prev_close, 0), {bands.MIN_TOLERANCE}),
               {bands.MAX_TOLERANCE}) AS tol,
-        -- Reference price we can actually reason about.
+        -- Reference price we can actually reason about. The last clause covers
+        -- the 2008 emergency, when the limit was changed repeatedly; assuming
+        -- the standard band there would read a locked bar as tradeable.
         (b.prev_close IS NOT NULL
          AND b.prev_close >= {bands.MIN_PRICE_FOR_BAND}
-         AND b.ref_gap_days <= {bands.MAX_REF_GAP_DAYS}) AS ref_ok
+         AND b.ref_gap_days <= {bands.MAX_REF_GAP_DAYS}
+         AND NOT ({_band_unknown_sql()})) AS ref_ok
     FROM b
 )
 SELECT
