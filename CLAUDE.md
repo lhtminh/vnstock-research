@@ -9,7 +9,23 @@ Python 3.13. Reads the `vnstock-service` Postgres database via DuckDB, mirrors
 it to Parquet, and does research on top: cleaning, labelling, features, alpha
 measurement, LightGBM/XGBoost, vectorbt backtest.
 
-Never modify `D:\vnstock-service`. It is finished, merged and on a scheduler.
+Never modify `D:\vnstock-service` from here. It fetches and stores; this models.
+
+**This package is also imported as a library by `D:\vnstock-paper`**, which
+paper trades the model on live data. That is why three things exist:
+
+- `VNRESEARCH_ROOT` overrides the repo root in `config.py`, so an outside
+  importer resolves `config/` and `data/` deliberately rather than by accident.
+- `vnr freeze` writes `models/frozen/*.pkl` plus a manifest. Nothing else here
+  persists a model — `walk_forward` and `evaluate_holdout` measure a PROCEDURE
+  and discard the estimator. Paper trading needs one specific fitted object.
+- `backtest/metrics.py` holds `performance` and `annual_table`, and
+  `backtest/__init__` resolves submodules lazily. Both exist so that reporting a
+  live book does not import vectorbt, which is an optional extra here because it
+  pins numpy and pandas hard.
+
+`models/frozen/` is COMMITTED, like `reports/`. It is the record of what was
+actually traded on which day.
 
 ## Invariants — do NOT violate these
 
@@ -55,6 +71,9 @@ Never modify `D:\vnstock-service`. It is finished, merged and on a scheduler.
 | strong IC and a losing backtest | the signal is fine and the construction is not: 73.7% turnover x 0.6% round trip = 22.3%/yr against a ~19%/yr gross edge |
 | horizon-21 labels are NOT used despite IC decay favouring them | tested. Individual features do strengthen out to 21 sessions, but the combined model's IC FALLS (0.083 -> 0.067) and gets unstable across folds. Lower cost did not make up for it |
 | the backtest parameters look under-tuned | deliberate. 35 dev configurations were searched; dev and holdout alpha rank them in opposite orders. More searching fits noise |
+| `check_single_epoch` allows several epochs in `daily_prices` | it checks PER TICKER, mirroring `v_basis_seams`. Repairing one restatement bumps one ticker, so a healthy database routinely holds two epochs — 12 tickers on 2 and 1,675 on 1 was normal. The old table-wide test failed all of them for the sins of none |
+| `vnr freeze` trains on the holdout | that is the point. Going live is what the holdout was kept for, its verdict is already recorded, and the paper log becomes the new out-of-sample test — a better one, because those decisions cannot be recomputed |
+| `freeze` reports `train_end` ~6 sessions before the last bar | a 5-session forward label needs 6 sessions ahead to exist. The most recent bars have no label yet |
 
 ## Where the reasoning lives
 
@@ -67,9 +86,10 @@ Never modify `D:\vnstock-service`. It is finished, merged and on a scheduler.
 ## Build, run, test
 
 ```bash
-.venv/Scripts/python -m pytest -q          # 43 tests, no database needed
+.venv/Scripts/python -m pytest -q          # 86 tests, no database needed
 .venv/Scripts/vnr pipeline                 # needs Postgres on 5432
 .venv/Scripts/vnr train --controls         # ~7 min, runs the leakage checks
+.venv/Scripts/vnr freeze                   # ~10 min, writes models/frozen/
 ```
 
 Install core before extras, and always with `-e`: `pip install ".[backtest]"`

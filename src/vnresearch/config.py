@@ -8,8 +8,14 @@ from typing import Any
 
 import yaml
 
-# repo root = three levels up from this file (src/vnresearch/config.py)
-ROOT = Path(__file__).resolve().parents[2]
+# Repo root = three levels up from this file (src/vnresearch/config.py).
+#
+# VNRESEARCH_ROOT overrides it for callers that import this package from
+# somewhere else. Without the override an outside importer — vnstock-paper —
+# silently resolves `config/` and `data/` back into this repo, which happens to
+# be what it wants for features and models but is not something to leave to
+# coincidence. Unset, behaviour is exactly as before.
+ROOT = Path(os.environ.get("VNRESEARCH_ROOT") or Path(__file__).resolve().parents[2])
 CONFIG_DIR = ROOT / "config"
 
 

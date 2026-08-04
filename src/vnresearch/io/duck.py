@@ -108,12 +108,25 @@ def mirror(tables: list[str] | None = None, verbose: bool = True) -> Manifest:
         ).fetchall()
     ]
     max_ingest = con.execute("SELECT max(ingested_at) FROM pg.daily_prices").fetchone()[0]
+    # Per-ticker seams. Several epochs across the TABLE is normal — repairing a
+    # restatement bumps one ticker at a time — but a single ticker holding two
+    # is a fabricated overnight gap in its own series. Mirrors v_basis_seams.
+    seams = [
+        r[0]
+        for r in con.execute(
+            """SELECT ticker FROM pg.daily_prices
+               WHERE adjustment_epoch IS NOT NULL
+               GROUP BY ticker HAVING count(DISTINCT adjustment_epoch) > 1
+               ORDER BY ticker"""
+        ).fetchall()
+    ]
     con.close()
 
     m = Manifest(
         row_counts=counts,
         adjustment_epochs=[e for e in epochs if e is not None],
         max_ingested_at=str(max_ingest) if max_ingest else None,
+        seam_tickers=seams,
     )
     write_manifest(out, m)
     return m

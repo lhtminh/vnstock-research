@@ -25,8 +25,15 @@ import vectorbt as vbt
 from vnresearch import config
 from vnresearch.backtest import rebalance, risk
 from vnresearch.backtest.costs import Costs
+
+# Re-exported: these moved to metrics.py so a caller reporting a live book does
+# not have to import vectorbt for them. Everything that imported them from here
+# still works.
+from vnresearch.backtest.metrics import annual_table, performance
 from vnresearch.clean.bands import MAX_INDEX_MOVE
 from vnresearch.io import duck
+
+__all__ = ["Result", "annual_table", "performance", "run"]
 
 
 @dataclass
@@ -47,44 +54,6 @@ class Result:
     @property
     def annual(self) -> pd.DataFrame:
         return annual_table(self.equity, self.benchmark)
-
-
-def performance(equity: pd.Series, benchmark: pd.Series) -> dict:
-    """Split the return into what the market gave and what is left.
-
-    Total return on its own is not a result. A long-only book in a rising market
-    earns beta times the index for free, and reporting the sum of that and any
-    genuine edge as one number makes a tracker look like a strategy.
-    """
-    eq = equity.dropna()
-    bm = benchmark.reindex(eq.index).ffill()
-    r = pd.DataFrame({"s": eq.pct_change(), "b": bm.pct_change()}).dropna()
-    if len(r) < 60:
-        return {}
-
-    years = len(r) / 252
-    cagr_s = (1 + r["s"]).prod() ** (1 / years) - 1
-    cagr_b = (1 + r["b"]).prod() ** (1 / years) - 1
-    beta = float(np.cov(r["s"], r["b"])[0, 1] / np.var(r["b"]))
-    return {
-        "cagr": float(cagr_s),
-        "benchmark_cagr": float(cagr_b),
-        "beta": beta,
-        "market_contribution": float(beta * cagr_b),
-        "alpha": float(cagr_s - beta * cagr_b),
-        "correlation": float(r["s"].corr(r["b"])),
-        "years": float(years),
-    }
-
-
-def annual_table(equity: pd.Series, benchmark: pd.Series) -> pd.DataFrame:
-    """Year-by-year strategy vs benchmark. The table that ends arguments."""
-    eq = equity.dropna()
-    bm = benchmark.reindex(eq.index).ffill()
-    r = pd.DataFrame({"strategy": eq.pct_change(), "benchmark": bm.pct_change()}).dropna()
-    out = (1 + r).groupby(r.index.year).prod() - 1
-    out["excess"] = out["strategy"] - out["benchmark"]
-    return out
 
 
 def _price_matrices(tickers: list[str], start, end, allow_untradeable: bool):

@@ -32,10 +32,17 @@ def select(
     rebal_dates: pd.DatetimeIndex,
     entry_rank: int,
     exit_rank: int | None = None,
+    initial_holdings: list[str] | None = None,
 ) -> dict[pd.Timestamp, list[str]]:
     """Holdings on each rebalance date, applying buffer hysteresis.
 
     exit_rank=None (or == entry_rank) reproduces plain top-N rebalancing.
+
+    initial_holdings seeds the book. A backtest starts flat and leaves it None;
+    live paper trading passes what it actually owns, because the buffer is a
+    statement about POSITIONS — "keep what you hold until it falls past
+    exit_rank" — and starting empty each session would re-derive the whole book
+    from scratch and generate a full turnover every time.
     """
     exit_rank = exit_rank or entry_rank
     if exit_rank < entry_rank:
@@ -43,7 +50,7 @@ def select(
 
     by_date = {d: g for d, g in preds.groupby("date")}
     holdings: dict[pd.Timestamp, list[str]] = {}
-    held: list[str] = []
+    held: list[str] = list(initial_holdings or [])
 
     for d in rebal_dates:
         day = by_date.get(d)

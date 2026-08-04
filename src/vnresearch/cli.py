@@ -99,6 +99,19 @@ def holdout(model: str = "lightgbm") -> None:
 
 
 @app.command()
+def freeze(model: str = "lightgbm", with_cv: bool = False) -> None:
+    """Fit on the whole sample and save the artifact paper trading loads.
+
+    Trains through the last labelled session, holdout INCLUDED — going live is
+    what the holdout was being kept for. --with-cv also records walk-forward
+    scores in the manifest (~7 min).
+    """
+    from vnresearch.model import freeze as fz
+
+    fz.build(model, with_cv=with_cv)
+
+
+@app.command()
 def backtest(model: str = "lightgbm", compare: bool = False, holdout: bool = False) -> None:
     """Backtest out-of-sample predictions. --compare shows the untradeable-fill delta."""
     import pandas as pd
