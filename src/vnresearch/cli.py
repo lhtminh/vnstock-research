@@ -47,6 +47,14 @@ def label() -> None:
 
 
 @app.command()
+def peers() -> None:
+    """Build the correlation-based peer sets the peer_* features read."""
+    from vnresearch.features import peers as peers_mod
+
+    typer.echo(f"\n-> {peers_mod.build()}")
+
+
+@app.command()
 def features() -> None:
     """Compute every registered feature plus its cross-sectional rank."""
     from vnresearch.features import build as fbuild
@@ -77,6 +85,27 @@ def train(model: str = "lightgbm", controls: bool = False) -> None:
     typer.echo("\n  top features:")
     for name, val in run.importance.head(8).items():
         typer.echo(f"    {name:<26} {val:8.1f}")
+
+    # Archived, not just printed. Eight lines of stdout cannot answer "did the
+    # feature I added last week displace anything", which is the only question
+    # that matters after a registry change. Stamped with the run time so two
+    # feature sets can be diffed directly.
+    from datetime import UTC, datetime
+
+    from vnresearch.features.registry import all_features
+
+    reg = all_features()
+    imp = run.importance_by_fold.copy()
+    imp.insert(0, "gain_pct", run.importance)
+    imp.insert(0, "category", [reg[n.removesuffix("_rank")].category for n in imp.index])
+    imp.insert(0, "rank", range(1, len(imp) + 1))
+    imp.index.name = "feature"
+    reports = config.path("reports")
+    reports.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    imp_path = reports / f"importance-{model}-{stamp}.csv"
+    imp.round(4).to_csv(imp_path)
+    typer.echo(f"  -> {imp_path}")
 
     if controls:
         typer.echo("\n  leakage controls:")
@@ -139,8 +168,12 @@ def backtest(model: str = "lightgbm", compare: bool = False, holdout: bool = Fal
 
 @app.command()
 def pipeline() -> None:
-    """Run mirror -> clean -> panel -> label -> features end to end."""
-    for step in (mirror, clean, panel, label, features):
+    """Run mirror -> clean -> panel -> label -> peers -> features end to end."""
+    # peers runs BEFORE features and inside the pipeline, not out of band. It
+    # used to be neither: build.py substitutes NULL for all four peer_* features
+    # when peers.parquet is missing, so a stale or absent file silently removed
+    # four features from the model instead of failing.
+    for step in (mirror, clean, panel, label, peers, features):
         typer.echo(f"\n=== {step.__name__} ===")
         step()
 

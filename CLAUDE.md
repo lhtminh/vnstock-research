@@ -60,24 +60,27 @@ actually traded on which day.
 
 | Looks wrong | Actually |
 |---|---|
-| market features NULL before 2019-09-12 | `index_series` starts there; bars start 2002 |
+| market features NULL before 2004-01-05 | `index_series` starts there; bars start 2002. (This said 2019-09-12 until the index history was extended. The SAMPLE starts 2009 for a different reason — see `model.yaml`: 2004-2008 has no cross-section to rank) |
 | `suspect_ohlc` = 7,070, not 552 | 552 is vn-audit's *liquid-universe* count; 7,070 is the `volume > 0` total, and matches exactly |
 | limit tolerance has a 0.3% floor | stored prices are ADJUSTED so not tick-aligned; a real limit-up can compute to 6.9%. Missing one is worse than over-calling one |
 | `band_anomaly` status exists | `symbols.exchange` is the CURRENT venue, so an old bar from a previous listing is judged against the wrong band |
 | exit is not required to be tradeable | requiring it would drop limit-up exits, truncating the winning tail and biasing against momentum |
-| model IC > best single feature | expected from combining 28 features; the leakage controls are what confirm it |
+| model IC > best single feature | expected from combining 59 features; the leakage controls are what confirm it |
 | the target is residual, not simple excess | simple excess is rank-invariant — 99.8% of rows share their day's benchmark window, so subtracting it changes no ordering. Only the beta term varies per stock |
-| holdout IC (0.123) > walk-forward IC (0.083) | not a bug. Recent years genuinely rank better; it also means nothing was overfitted to the dev period |
+| holdout IC (0.138) > walk-forward IC (0.083) | not a bug. Recent years genuinely rank better; it also means nothing was overfitted to the dev period |
 | strong IC and a losing backtest | the signal is fine and the construction is not: 73.7% turnover x 0.6% round trip = 22.3%/yr against a ~19%/yr gross edge |
 | horizon-21 labels are NOT used despite IC decay favouring them | tested. Individual features do strengthen out to 21 sessions, but the combined model's IC FALLS (0.083 -> 0.067) and gets unstable across folds. Lower cost did not make up for it |
 | the backtest parameters look under-tuned | deliberate. 35 dev configurations were searched; dev and holdout alpha rank them in opposite orders. More searching fits noise |
 | `check_single_epoch` allows several epochs in `daily_prices` | it checks PER TICKER, mirroring `v_basis_seams`. Repairing one restatement bumps one ticker, so a healthy database routinely holds two epochs — 12 tickers on 2 and 1,675 on 1 was normal. The old table-wide test failed all of them for the sins of none |
 | `vnr freeze` trains on the holdout | that is the point. Going live is what the holdout was kept for, its verdict is already recorded, and the paper log becomes the new out-of-sample test — a better one, because those decisions cannot be recomputed |
 | `freeze` reports `train_end` ~6 sessions before the last bar | a 5-session forward label needs 6 sessions ahead to exist. The most recent bars have no label yet |
+| `peer_*` values change when you rebuild | KNOWN DEFECT, not a design choice. `_residual_returns` subtracts the mean over EVERY ticker in the panel, and the rebalance grid is anchored to an array index, so new data rewrites peer features back to 2007. Measured 2026-08-05: 73% of all rows moved between two builds three days apart, changing 8 of the live model's top 50. Tracked separately; do not confuse it with a formula change |
 
 ## Where the reasoning lives
 
 - `clean/bands.py` — price limits, tick sizes, and why the tolerance is clamped
+- `features/technical.py` — why RSI and MACD are simple, not exponential
+- `features/shape.py` — the two ways to measure speculation, one of them Vietnam-only
 - `clean/bars.py` — bar_status precedence, generated from the band constants
 - `label/forward.py` — entry/exit asymmetry
 - `model/cv.py` — the purge diagram
@@ -86,7 +89,7 @@ actually traded on which day.
 ## Build, run, test
 
 ```bash
-.venv/Scripts/python -m pytest -q          # 86 tests, no database needed
+.venv/Scripts/python -m pytest -q          # 93 tests, no database needed
 .venv/Scripts/vnr pipeline                 # needs Postgres on 5432
 .venv/Scripts/vnr train --controls         # ~7 min, runs the leakage checks
 .venv/Scripts/vnr freeze                   # ~10 min, writes models/frozen/

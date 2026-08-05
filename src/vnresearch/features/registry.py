@@ -14,6 +14,7 @@ to build a frame here, and it cannot express FOLLOWING.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,21 @@ class Feature:
 
 
 _REGISTRY: dict[str, Feature] = {}
+_WINDOWS: dict[str, Any] | None = None
+
+
+def windows() -> dict[str, Any]:
+    """The `features:` block of config/features.yaml.
+
+    Cached because every feature module reads it at import time and the modules
+    are imported on each all_features() call.
+    """
+    global _WINDOWS
+    if _WINDOWS is None:
+        from vnresearch import config
+
+        _WINDOWS = config.load("features").get("features", {})
+    return _WINDOWS
 
 
 def win(n: int) -> str:
@@ -49,7 +65,15 @@ def register(name: str, sql: str, category: str, lookback: int) -> Feature:
 
 def all_features() -> dict[str, Feature]:
     # Import for side effects: each module registers on import.
-    from vnresearch.features import cluster, market, momentum, price, volume  # noqa: F401
+    from vnresearch.features import (  # noqa: F401
+        cluster,
+        market,
+        momentum,
+        price,
+        shape,
+        technical,
+        volume,
+    )
 
     return dict(_REGISTRY)
 

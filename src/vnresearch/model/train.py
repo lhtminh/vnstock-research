@@ -62,6 +62,11 @@ class Run:
     folds: list[FoldResult]
     importance: pd.Series
     oos: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # Per-fold gain, normalised within each fold. Kept alongside the average
+    # because the average hides the case that matters most when judging a new
+    # feature: one that carries a whole fold and does nothing in the other three
+    # is noise that happened to fit, and it reads as respectable once averaged.
+    importance_by_fold: pd.DataFrame = field(default_factory=pd.DataFrame)
 
     @property
     def summary(self) -> pd.DataFrame:
@@ -134,13 +139,16 @@ def walk_forward(
     # Normalise per fold before averaging: gain is on an arbitrary scale that
     # grows with training set size, so a raw mean would let the last (largest)
     # fold decide the ranking on its own.
-    imp = (
-        pd.concat([s / s.sum() for s in importances], axis=1)
-        .mean(axis=1)
-        .mul(100)
-        .sort_values(ascending=False)
+    by_fold = pd.concat([s / s.sum() for s in importances], axis=1).mul(100)
+    by_fold.columns = [f"fold_{i}" for i in range(by_fold.shape[1])]
+    imp = by_fold.mean(axis=1).sort_values(ascending=False)
+    return Run(
+        model=model_name,
+        folds=folds,
+        importance=imp,
+        oos=pd.concat(oos, ignore_index=True),
+        importance_by_fold=by_fold.loc[imp.index],
     )
-    return Run(model=model_name, folds=folds, importance=imp, oos=pd.concat(oos, ignore_index=True))
 
 
 def evaluate_holdout(model_name: str = "lightgbm", horizon: int | None = None) -> dict:

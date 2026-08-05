@@ -23,7 +23,7 @@ With Postgres running (`vnstock-pg` container, port 5432):
 .venv/Scripts/vnr pipeline
 ```
 
-That runs mirror → clean → panel → label → features. Then:
+That runs mirror → clean → panel → label → peers → features. Then:
 
 ```bash
 .venv/Scripts/vnr alpha
@@ -45,7 +45,8 @@ That runs mirror → clean → panel → label → features. Then:
 | `clean` | `data/clean/bars.parquet` | Rebuilds `bar_status`, which the source leaves NULL |
 | `panel` | `data/clean/panel.parquet` | Tradeability, ADTV, universe, market return |
 | `label` | `data/clean/labels.parquet` | Forward returns at horizons 1/5/10/21 |
-| `features` | `data/features/features.parquet` | 28 features plus cross-sectional ranks |
+| `peers` | `data/features/peers.parquet` | Correlation-based peer sets the `peer_*` features read |
+| `features` | `data/features/features.parquet` | 59 features plus cross-sectional ranks |
 | `alpha` | `reports/alpha-*.md` | IC, decay, quantile spread, turnover, redundancy |
 | `train` | `data/oos_*.parquet` | Walk-forward with purged folds |
 | `backtest` | stdout | vectorbt, VN costs, capacity cap |
@@ -65,9 +66,10 @@ thin on purpose:
   forward. Not modelable yet.
 - **Sector covers 37 tickers, market cap 51.** Both grow when the service's
   weekly job runs.
-- **Market features start 2019-09-12**, where `index_series` starts. Bars go
+- **Market features start 2004-01-05**, where `index_series` starts. Bars go
   back to 2002. Beta, alpha and excess return are NULL before that — a boundary,
-  not a bug.
+  not a bug. The training sample starts later still, at 2009, for an unrelated
+  reason: 2004-2008 has too few liquid names to rank.
 
 Universe: ~293 names on a given recent day, 941k rows across 2002–2026.
 
@@ -83,7 +85,7 @@ Single features, 5-session horizon — all consistent with the literature:
 | `ret_1` | −0.034 | short-term reversal, decays to zero by 21d |
 | `mom_12_1` | +0.017 | classic momentum, not monotonic here |
 
-LightGBM on the residual target, 4 purged walk-forward folds (2021–2023):
+LightGBM on the residual target, 4 purged walk-forward folds (2010–2023):
 **mean IC +0.0825**, positive in every fold. On the **frozen holdout**
 (2024-01-01 onward, never trained on, scored once): **IC +0.1231, IR 1.32**.
 The holdout scoring higher than development is the opposite of overfitting.
@@ -135,7 +137,7 @@ default.
 .venv/Scripts/python -m pytest -q
 ```
 
-43 tests. The ones that matter:
+93 tests. The ones that matter:
 
 - **truncation invariance** — every feature is recomputed on truncated history
   and must be identical, which is what catches lookahead
@@ -152,7 +154,7 @@ src/vnresearch/
   io/         DuckDB session, Postgres mirror, manifest
   clean/      price bands, bar_status, panel, calendar
   label/      forward returns
-  features/   registry + momentum/price/volume/market/xsec
+  features/   registry + momentum/price/volume/market/technical/shape/peers/xsec
   alpha/      IC, quantiles, report
   model/      purged CV, dataset, walk-forward training
   backtest/   vectorbt engine, VN cost model

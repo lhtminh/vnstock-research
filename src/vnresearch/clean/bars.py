@@ -110,6 +110,11 @@ t AS (
 SELECT
     ticker, date, open, high, low, close, volume, adjustment_epoch,
     exchange, symbol_status, prev_close, ret, ref_gap_days,
+    -- The operative limit for this session, as a fraction. NULL where the band
+    -- is not knowable — same rule the status column follows, so a feature built
+    -- on it inherits "unknown, never guessed" instead of silently dividing by
+    -- the current-era 7%.
+    CASE WHEN ref_ok THEN band END AS band_pct,
     CASE
         WHEN volume IS NULL OR volume = 0 THEN 'no_trade'
         WHEN high < GREATEST(open, close) - 0.01

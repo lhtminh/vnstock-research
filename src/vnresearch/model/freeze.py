@@ -141,8 +141,10 @@ def build(
     data = ds.load(horizon, include_holdout=True)
     if verbose:
         print(f"  rows                {len(data):,}")
-        print(f"  span                {pd.to_datetime(data.dates).min().date()} .. "
-              f"{pd.to_datetime(data.dates).max().date()}")
+        print(
+            f"  span                {pd.to_datetime(data.dates).min().date()} .. "
+            f"{pd.to_datetime(data.dates).max().date()}"
+        )
         print(f"  features            {data.X.shape[1]}")
 
     model = tr.make_model(model_name)
@@ -219,9 +221,7 @@ def latest(model_name: str = "lightgbm", model_dir: str | Path | None = None) ->
     d = Path(model_dir) if model_dir else config.path(MODEL_DIR)
     found = sorted(d.glob(f"{model_name}_*.pkl")) if d.exists() else []
     if not found:
-        raise FileNotFoundError(
-            f"no frozen {model_name} model in {d} — run `vnr freeze` first"
-        )
+        raise FileNotFoundError(f"no frozen {model_name} model in {d} — run `vnr freeze` first")
     return max(found, key=lambda p: (p.stem.split("_")[1], p.stat().st_mtime))
 
 

@@ -38,20 +38,17 @@ def load_window(start: str = STRESS_START, end: str = STRESS_END) -> ds.Dataset:
     feats = feature_names(ranked=cfg["use_ranked_features"])
     target = cfg.get("target", "residual")
 
+    # Both imported, never restated. A local copy of either one means this test
+    # keeps scoring the previous target after someone changes it, and the result
+    # still looks plausible.
     where = [
         f"label_ok_{horizon}",
         f"fwd_ret_{horizon} IS NOT NULL",
         f"date >= DATE '{start}'",
         f"date < DATE '{end}'",
+        *ds.target_filters(horizon, target),
     ]
-    if target == "residual":
-        where += [f"bench_ret_{horizon} IS NOT NULL", "beta_60 IS NOT NULL"]
-
-    expr = (
-        f"fwd_ret_{horizon} - beta_60 * bench_ret_{horizon}"
-        if target == "residual"
-        else f"fwd_ret_{horizon}"
-    )
+    expr = ds._target_sql(horizon, target)
 
     con = open_joined(include_holdout=True, apply_start=False)
     try:

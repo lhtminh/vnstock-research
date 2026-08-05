@@ -8,11 +8,12 @@ rather than lumped in with the long ones.
 
 from __future__ import annotations
 
-from vnresearch.features.registry import lag, register, win
+from vnresearch.features.registry import lag, register, win, windows
 
 _CAT = "momentum"
+_CFG = windows()
 
-for _n in (1, 5, 21, 63, 126, 252):
+for _n in _CFG["momentum_windows"]:
     register(
         f"ret_{_n}",
         f"close / NULLIF({lag('close', _n)}, 0) - 1",

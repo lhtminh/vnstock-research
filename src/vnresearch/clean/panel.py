@@ -217,7 +217,7 @@ SELECT
     s.ticker, s.date, s.open, s.high, s.low, s.close, s.volume,
     s.exchange, s.symbol_status, s.bar_status, s.prev_close, s.ret,
     s.turnover, s.adtv, s.obs AS adtv_obs, s.dilution_252,
-    s.seas_month, s.seas_tet, s.days_from_tet,
+    s.seas_month, s.seas_tet, s.days_from_tet, s.band_pct,
     (s.bar_status = '{TRADEABLE}') AS tradeable,
     (s.adtv >= {adtv_min} {full_window}) AS in_universe,
     mkt.mkt_ret

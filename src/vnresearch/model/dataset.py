@@ -36,11 +36,49 @@ class Dataset:
 
 
 def _target_sql(horizon: int, target: str) -> str:
+    """The value the model ranks. ONE definition — stress.py imports this.
+
+    It used to keep its own copy, which meant changing the target here left the
+    2008 stress test quietly scoring the old one.
+    """
     if target == "residual":
         return f"fwd_ret_{horizon} - beta_60 * bench_ret_{horizon}"
+    if target == "residual_vol_scaled":
+        # Residual return per unit of the stock's OWN recent volatility.
+        #
+        # Ranking the raw residual pays for volatility as much as for skill: a
+        # name with twice the vol has roughly twice the spread and reaches the
+        # top decile more often for that reason alone. Dividing asks whether the
+        # move was large *for this stock*.
+        #
+        # The explicit CASE rather than GREATEST(vol_21, floor): GREATEST(NULL,
+        # x) returns x in DuckDB, so a missing vol would be handed a fabricated
+        # floor and a row with no computable target would rank as a real one.
+        # Invariant 3, and the same trap as downside_vol_21.
+        return (
+            f"CASE WHEN vol_21 IS NOT NULL AND vol_21 > 0 "
+            f"THEN (fwd_ret_{horizon} - beta_60 * bench_ret_{horizon}) / vol_21 END"
+        )
     if target == "raw":
         return f"fwd_ret_{horizon}"
-    raise ValueError(f"unknown target {target!r}; use 'residual' or 'raw'")
+    raise ValueError(f"unknown target {target!r}; use 'residual', 'residual_vol_scaled' or 'raw'")
+
+
+def target_filters(horizon: int, target: str) -> list[str]:
+    """Rows on which the target cannot be computed, so they must not enter.
+
+    Lives beside _target_sql because the two move together: a target that
+    divides by vol_21 needs vol_21 present, and forgetting that leaves rows with
+    a NULL target being percentile-ranked as though they were real values.
+    """
+    if target not in ("residual", "residual_vol_scaled"):
+        return []
+    # Both are NULL before the index series starts, so this is also what keeps
+    # unbenchmarked early rows out of the sample.
+    f = [f"bench_ret_{horizon} IS NOT NULL", "beta_60 IS NOT NULL"]
+    if target == "residual_vol_scaled":
+        f += ["vol_21 IS NOT NULL", "vol_21 > 0"]
+    return f
 
 
 def load(
@@ -62,11 +100,8 @@ def load(
     where = [
         f"label_ok_{horizon}",
         f"fwd_ret_{horizon} IS NOT NULL",
+        *target_filters(horizon, target),
     ]
-    if target == "residual":
-        # Both are NULL before the index series starts, so this is also what
-        # enforces the 2019-09-12 floor.
-        where += [f"bench_ret_{horizon} IS NOT NULL", "beta_60 IS NOT NULL"]
     if cfg.get("start_date"):
         where.append(f"date >= DATE '{cfg['start_date']}'")
 

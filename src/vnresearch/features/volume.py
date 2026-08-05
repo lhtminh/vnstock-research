@@ -7,9 +7,10 @@ put-through trades entirely.
 
 from __future__ import annotations
 
-from vnresearch.features.registry import register, win
+from vnresearch.features.registry import register, win, windows
 
 _CAT = "volume"
+_CFG = windows()
 
 # Size proxy until company_snapshot covers more than 51 tickers. Log because
 # turnover spans six orders of magnitude across this universe.
@@ -29,11 +30,39 @@ for _n in (5, 21):
 # Amihud illiquidity: price impact per unit of turnover. High means the stock
 # moves a lot on little volume, which is exactly where backtest returns are
 # most likely to be unreachable in practice.
+#
+# Two windows: the short one reacts to a liquidity event, the long one describes
+# the name. A stock that is normally liquid and just became hard to trade is a
+# different proposition from one that was never liquid.
+for _n in _CFG["amihud_windows"]:
+    register(
+        f"amihud_{_n}",
+        f"AVG(ABS(ret) / NULLIF(turnover, 0)) {win(_n)} * 1e9",
+        _CAT,
+        _n,
+    )
+
+# Volume as a standardised surprise rather than a level. turnover_ratio above is
+# today against a 20-day mean, which says nothing about whether that size of
+# move is unusual FOR THIS NAME — a stock whose volume routinely doubles and one
+# where it never has both read 2.0.
+_vw = _CFG["volume_window"]
 register(
-    "amihud_21",
-    f"AVG(ABS(ret) / NULLIF(turnover, 0)) {win(21)} * 1e9",
+    f"volume_z_{_vw}",
+    f"(volume - AVG(volume) {win(_vw)}) / NULLIF(STDDEV_SAMP(volume) {win(_vw)}, 0)",
     _CAT,
-    21,
+    _vw,
+)
+
+# Is liquidity building or draining? A ratio of a fast to a slow turnover
+# average. Drying liquidity precedes both wider spreads and the point at which
+# the capacity cap starts binding on a position.
+_af, _as_ = _CFG["amihud_windows"]
+register(
+    f"adtv_trend_{_af}_{_as_}",
+    f"AVG(turnover) {win(_af)} / NULLIF(AVG(turnover) {win(_as_)}, 0) - 1",
+    _CAT,
+    _as_,
 )
 
 # Share of recent sessions that were limit-locked or had no trade. A name that
