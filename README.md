@@ -50,6 +50,7 @@ That runs mirror → clean → panel → label → peers → features. Then:
 | `alpha` | `reports/alpha-*.md` | IC, decay, quantile spread, turnover, redundancy |
 | `train` | `data/oos_*.parquet` | Walk-forward with purged folds |
 | `backtest` | stdout | vectorbt, VN costs, capacity cap |
+| `speculation` | `data/clean/speculation.parquet` | The mentor's PVDI/turnover/volatility/range labels |
 | `publish` | Postgres `research` schema | The labelled sample, for SQL from outside this repo |
 
 Everything is DuckDB SQL over Parquet. The full pipeline is about three minutes
@@ -67,6 +68,7 @@ touched.
 | `research.labels` | 943k | Forward returns at 1/5/10/21, tradeable entry |
 | `research.training_sample` | 644k | **view** — the matrix the model trains on |
 | `research.holdout_sample` | 212k | **view** — the frozen holdout, kept separate on purpose |
+| `research.speculation` | 2.9M | Speculation labels — PVDI, turnover, volatility, range, composite |
 | `research.feature_catalog` | 59 | Each feature's dimension, lookback and SQL definition |
 | `research.publish_runs` | — | One row per publish, with the mirror snapshot it came from |
 

@@ -83,6 +83,7 @@ actually traded on which day.
 | the buffer is not free | `exit_rank` was set to cut turnover and it did — 73.7% -> 8.9%. What nobody measured was the signal given up: at 200 the daily top-50 edge is +0.00350 and what the book actually HOLDS earns +0.00068. Moving to 100 took dev alpha -5.18% -> +1.21% with drawdown unchanged. See `config/backtest.yaml` for the sweep |
 | 59 features rank 15% better and earn LESS on dev | measured, not a bug in either number. WF IC +0.0730 -> +0.0838; dev alpha -2.93% -> -3.77%. 8 of 14 years improved and the loss is almost entirely 2016 (-8.3pp) and 2017 (-10.5pp); 2020-2023 gained +10.6pp between them. Both configurations are NEGATIVE on dev, so this compares two losing setups over a period where the long-only book has never worked. It is the third piece of evidence that portfolio construction, not prediction, is the binding constraint |
 | peer groups got smaller (7.7 -> 5.9 names, corr 0.388 -> 0.357) | expected, and it is the fix working. Demeaning by the INVESTABLE cross-section removes more of the common factor than demeaning by every ticker in the panel did, so less residual correlation is left and fewer pairs clear `MIN_CORR`. That threshold was calibrated against the old, inflated numbers — it is now effectively stricter. Not retuned, because tuning it against the same data that revealed it is how the dev/holdout orderings got reversed before |
+| only 58 rows in 2.5M are `dau_co_manh` | the mentor's weighting, not a bug. PVDI carries 0.40 on ABSOLUTE thresholds (1/2/3.5) and reaches its top bucket on 0.03% of rows, while the other three are percentile-scored and put 5% in theirs by construction. Reaching 2.25 needs PVDI at 3 plus nearly everything else maxed. See `reports/speculation-labelling-20260810.md` |
 | `research.features` stores REAL, but the parquet is DOUBLE | deliberate. `dataset.load()` casts every feature to float32 before the model sees one, so the extra bits are never consumed — 505 MB instead of 918 MB, and both paths round the same double to the same float32. Prices, returns and labels stay DOUBLE, because that reasoning does not cover them |
 | a feature with a NULL raw value has a NULL rank, not 0.5 | correct, and it was a real defect until `c2d20a9`. `PERCENT_RANK() OVER (ORDER BY col)` sorts NULLs last, so every row missing a value was bunched at the TOP of that day's ranking: measured 2026-08-04, 47 names with no `peer_corr` all scored 0.836 while the 234 real values spanned 0.000-0.832 — "no data" read to the model as "higher than 83% of the market". Invariant 3 one layer up. Fixed by ranking only real values; imputing a middle value instead would be inventing data. Verified on the published table: 317,121 rows have no `peer_corr` and **none** carries a rank |
 
@@ -93,6 +94,8 @@ actually traded on which day.
 - `features/shape.py` — the two ways to measure speculation, one of them Vietnam-only
 - `clean/bars.py` — bar_status precedence, generated from the band constants
 - `label/forward.py` — entry/exit asymmetry
+- `label/speculation.py` — the mentor's scheme, and the three places it and the
+  data disagree. Not a training target: every input is trailing
 - `model/cv.py` — the purge diagram
 - `backtest/engine.py` — NaN prices as the untradeable mechanism
 - `io/publish.py` — the schema boundary, and why the holdout is its own view

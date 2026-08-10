@@ -63,6 +63,19 @@ def features() -> None:
 
 
 @app.command()
+def speculation() -> None:
+    """Label speculation per the mentor's document: PVDI, turnover, volatility, range.
+
+    ~5 minutes — the percentile step pools every stock over a trailing year and
+    recomputes it for each of 5,900 dates. This is a DESCRIPTION of how a stock
+    is behaving, built from trailing data only, not a forward-looking target.
+    """
+    from vnresearch.label import speculation as spec
+
+    typer.echo(f"\n-> {spec.build()}")
+
+
+@app.command()
 def publish() -> None:
     """Copy the labelled sample into Postgres, schema `research`.
 

@@ -278,6 +278,32 @@ def build(verbose: bool = True) -> dict[str, Any]:
                 f"  labels              {n_lab:>9,} rows                 {time.time() - t0:5.1f}s"
             )
 
+        # Optional, and quietly skipped when absent rather than fatal: the
+        # speculation labels are a separate ~5 minute command, not part of the
+        # pipeline, so a fresh checkout legitimately has none yet.
+        n_spec = 0
+        spec_path = config.path("data/clean/speculation.parquet")
+        if spec_path.exists():
+            t0 = time.time()
+            con.execute(
+                f"CREATE OR REPLACE TABLE pg.{SCHEMA}.speculation AS "
+                f"SELECT * FROM read_parquet('{spec_path.as_posix()}')"
+            )
+            n_spec = con.execute(f"SELECT count(*) FROM pg.{SCHEMA}.speculation").fetchone()[0]
+            _exec(
+                con,
+                f"CREATE UNIQUE INDEX IF NOT EXISTS speculation_key "
+                f"ON {SCHEMA}.speculation (ticker, date)",
+            )
+            _exec(
+                con, f"CREATE INDEX IF NOT EXISTS speculation_date ON {SCHEMA}.speculation (date)"
+            )
+            if verbose:
+                took = time.time() - t0
+                print(f"  speculation         {n_spec:>9,} rows                 {took:5.1f}s")
+        elif verbose:
+            print("  speculation             absent — run `vnr speculation` to build it")
+
         # UNIQUE, not just an index: (ticker, date) is the key both tables are
         # joined on, and a duplicate would silently multiply the training set.
         # Named, so a run that died between the table and its index can be
@@ -309,7 +335,7 @@ def build(verbose: bool = True) -> dict[str, Any]:
 
         n_cat = _write_catalog(con)
         _record_run(con, {"features": n_feat, "labels": n_lab, "features_cols": len(cols)})
-        _comment(con)
+        _comment(con, skip=set() if n_spec else {"speculation"})
 
         if verbose:
             dims = con.execute(
@@ -322,6 +348,7 @@ def build(verbose: bool = True) -> dict[str, Any]:
         return {
             "features": n_feat,
             "labels": n_lab,
+            "speculation": n_spec,
             "training_sample": n_train,
             "holdout_sample": n_hold,
             "feature_catalog": n_cat,
@@ -345,6 +372,16 @@ _COMMENTS: tuple[tuple[str, str, str], ...] = (
         (
             "Forward returns with tradeable entry, per horizon. Entry is the NEXT "
             "session's open and must be tradeable; exit is deliberately not required to be."
+        ),
+    ),
+    (
+        "TABLE",
+        "speculation",
+        (
+            "Speculation labels per the mentor's document: PVDI, turnover, volatility "
+            "and range scored 0-3 and weighted 40/30/15/15. A DESCRIPTION of current "
+            "behaviour from trailing data, not a forward-looking target — see "
+            "config/speculation.yaml for where the source document is ambiguous."
         ),
     ),
     (
@@ -380,7 +417,13 @@ _COMMENTS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def _comment(con) -> None:
-    """Tell someone reading the database what these are and where they came from."""
+def _comment(con, skip: set[str] = frozenset()) -> None:
+    """Tell someone reading the database what these are and where they came from.
+
+    `skip` covers the optional speculation table: commenting on an object that
+    was not created fails, and an absent optional artefact is not an error.
+    """
     for kind, name, text in _COMMENTS:
+        if name in skip:
+            continue
         _exec(con, f"COMMENT ON {kind} {SCHEMA}.{name} IS {_literal(text)}")

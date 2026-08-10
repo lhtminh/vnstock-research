@@ -1,0 +1,100 @@
+# Speculation labelling, from "Phương Pháp Nhận Diện Dấu Hiệu Đầu Cơ Cổ Phiếu".
+#
+# Every threshold and weight below is the document's. The four settings marked
+# NOT IN THE DOCUMENT are ones it leaves open; they are here rather than in code
+# so that what was specified and what was chosen stay distinguishable.
+
+universe:
+  # "toàn thị trường" — the whole market, not the liquid universe the alpha
+  # model trades. Speculation concentrates in small illiquid names, so filtering
+  # to the tradeable universe first would remove the population of interest.
+  bar_status: normal
+  min_volume: 1
+
+# The document writes the rolling window as t-248..t but calls it 252 sessions,
+# and divides the ratio by 248. One session either way moves nothing; both are
+# 252 here so the two windows are the same length.
+windows:
+  percentile: 252   # pooled trailing window the Q75/Q90/Q95 come from
+  ratio: 252        # window the "tỷ lệ đầu cơ" counts days over
+  smooth: 5         # "Volatility 5 phiên" / "Range 5 phiên"
+
+pvdi:
+  long: 252         # ρ_expected and σ_correlation, "12 tháng gần nhất"
+  short: 21         # ρ_observed. NOT IN THE DOCUMENT — it says only "giai đoạn
+                    # ngắn". 21 sessions is one month.
+  # PVDI_composite = w1·PVDI_daily + w2·PVDI_weekly. The document says the
+  # weights are "tối ưu hóa dựa trên dữ liệu 12 tháng gần nhất" but gives no
+  # objective to optimise against, and there is no ground-truth speculation
+  # label to fit to. Inventing one would produce a number nobody could
+  # reproduce, so the default is daily only. Set w_weekly to blend.
+  w_daily: 1.0
+  w_weekly: 0.0
+  weekly_sessions: 5
+  # Correlation is between price CHANGE and volume — the document's ρ_expected
+  # is defined on "biến động giá", though the Pearson formula below it writes P
+  # for price. Level-vs-volume over a year measures trend, not the price-volume
+  # relationship the theory describes. Set to "close" for the literal reading.
+  price_term: ret
+  thresholds: [1.0, 2.0, 3.5]
+
+turnover:
+  # THE DOCUMENT'S DENOMINATOR IS FREE FLOAT AND WE DO NOT HAVE IT.
+  # company_snapshot covers 51 tickers on one date; market_snapshot.listed_share
+  # covers 1,620 tickers but on 4 sessions, all from the last two weeks. Neither
+  # gives a share count for a 2010 bar, and using a 2026 count for one would be
+  # both wrong and forward-looking.
+  #
+  # So the denominator is the stock's OWN trailing average volume. That keeps
+  # what the measure is for — trading activity abnormal relative to this name's
+  # normal — and keeps it dimensionless and comparable across stocks, which is
+  # what the cross-sectional percentile step needs. It is NOT the document's
+  # formula. Switch to free_float when the service has the history.
+  denominator: own_volume   # own_volume | free_float
+  fast: 21
+  slow: 252
+
+volatility:
+  # The document's formula is the SIGNED daily change, (P_t - P_t-1)/P_t-1,
+  # averaged over 5 sessions. Its own theory section says volatility rises both
+  # when a stock is pushed up AND when it is dumped — but a signed mean cannot
+  # see the second. A falling stock sits at the BOTTOM of the distribution, and
+  # the buckets only flag the top.
+  #
+  # MEASURED on the full panel: the two forms disagree on 35.4% of daily labels.
+  # Of the 14,561 rows where a stock fell more than 5% a day averaged over five
+  # sessions, the signed formula calls ALL 14,561 of them Bình thường.
+  #
+  # "signed" is the formula as written. "abs" is what the theory describes.
+  measure: signed   # signed | abs
+
+range:
+  # The document's Range is P_high - P_low in absolute VND, unnormalised. Across
+  # a cross-section that mostly ranks price LEVEL: a 100,000 VND stock has a
+  # wider absolute range than a 5,000 VND one on the same percentage move.
+  #
+  # MEASURED: median share price rises monotonically with the absolute label —
+  # 6,910 / 15,000 / 21,740 / 34,780 VND across the four buckets. It is largely
+  # a price ranking. Dividing by the previous close inverts it (9,360 / 7,650 /
+  # 6,950 / 6,500), which is the direction penny-stock speculation actually
+  # runs. The two disagree on 33.0% of daily labels.
+  #
+  # "absolute" is the formula as written.
+  measure: absolute   # absolute | pct
+
+# Bình thường 0, Đầu cơ nhẹ 1, Đầu cơ 2, Đầu cơ mạnh 3.
+quantiles: [0.75, 0.90, 0.95]
+
+composite:
+  weights:
+    pvdi: 0.40
+    turnover: 0.30
+    volatility: 0.15
+    range: 0.15
+  thresholds: [0.75, 1.5, 2.25]
+
+labels:
+  - binh_thuong
+  - dau_co_nhe
+  - dau_co
+  - dau_co_manh
