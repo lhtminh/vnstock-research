@@ -14,12 +14,35 @@ from __future__ import annotations
 
 
 def rank_expr(col: str) -> str:
-    """Percentile rank of col within the day's universe, 0..1."""
+    """Percentile rank of col within the day's universe, 0..1. NULL stays NULL.
+
+    A missing value must not be given a rank. SQL `ORDER BY` sorts NULLs LAST,
+    so ranking them alongside real values bunched every missing row at the TOP
+    of the day: on 2026-08-04 the 47 names with no `peer_corr` all scored 0.836
+    while the 234 real values spanned 0.000-0.832, making "no peer data"
+    indistinguishable from "more correlated than 83% of the market". That held
+    on every partial-coverage day of every affected feature — 48 of 59.
+
+    Splitting the partition on nullity fixes two things at once:
+
+      1. The missing rows rank among themselves and the outer CASE discards
+         that, so they leave as NULL and LightGBM routes them natively.
+      2. The real values regain the full 0..1 range. Ranking against a
+         denominator that counted the NULLs compressed them into
+         0..n_real/n_total — which is why 2026-08-04's real values stopped at
+         0.832, not 1.0. That ceiling moved with each day's coverage, so the
+         rank was not even comparable across dates, which is the one thing
+         ranking exists to guarantee.
+
+    Do not "fix" this by imputing 0.5 instead. That reintroduces the same
+    defect in the middle of the distribution, and missingness is not neutral
+    here: missing rows underperform slightly (mean target rank 0.495 vs 0.503).
+    """
     # The PARTITION includes in_universe so the two groups rank separately, and
     # the outer CASE keeps only the universe values.
     return (
-        f"CASE WHEN in_universe THEN PERCENT_RANK() OVER "
-        f"(PARTITION BY date, in_universe ORDER BY {col}) END"
+        f"CASE WHEN in_universe AND {col} IS NOT NULL THEN PERCENT_RANK() OVER "
+        f"(PARTITION BY date, in_universe, ({col} IS NULL) ORDER BY {col}) END"
     )
 
 
