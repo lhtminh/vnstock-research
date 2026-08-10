@@ -63,6 +63,21 @@ def features() -> None:
 
 
 @app.command()
+def publish() -> None:
+    """Copy the labelled sample into Postgres, schema `research`.
+
+    Deliberately NOT part of `vnr pipeline`. The pipeline runs on the clock
+    before the 15:00 trading decision, and nothing on that path reads these
+    tables — they are for querying from outside this repo. `research.publish_runs`
+    records the mirror snapshot each copy came from, so staleness is visible.
+    """
+    from vnresearch.io import publish as pub
+
+    typer.echo(f"publishing to {config.dsn().split('@')[-1]}, schema {pub.SCHEMA}")
+    pub.build()
+
+
+@app.command()
 def alpha(horizon: int = 5, top: int = 10) -> None:
     """Measure each feature standalone and write a markdown report."""
     from vnresearch.alpha import report

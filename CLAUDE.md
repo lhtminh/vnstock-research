@@ -11,6 +11,11 @@ measurement, LightGBM/XGBoost, vectorbt backtest.
 
 Never modify `D:\vnstock-service` from here. It fetches and stores; this models.
 
+`vnr publish` writes the labelled sample back into that database, but into a
+**`research` schema** — `public` is the service's, it applies its own migrations
+from Go with unqualified DDL, and nothing here writes to it. The separate schema
+is what makes that mechanical instead of a convention.
+
 **This package is also imported as a library by `D:\vnstock-paper`**, which
 paper trades the model on live data. That is why three things exist:
 
@@ -78,7 +83,8 @@ actually traded on which day.
 | the buffer is not free | `exit_rank` was set to cut turnover and it did — 73.7% -> 8.9%. What nobody measured was the signal given up: at 200 the daily top-50 edge is +0.00350 and what the book actually HOLDS earns +0.00068. Moving to 100 took dev alpha -5.18% -> +1.21% with drawdown unchanged. See `config/backtest.yaml` for the sweep |
 | 59 features rank 15% better and earn LESS on dev | measured, not a bug in either number. WF IC +0.0730 -> +0.0838; dev alpha -2.93% -> -3.77%. 8 of 14 years improved and the loss is almost entirely 2016 (-8.3pp) and 2017 (-10.5pp); 2020-2023 gained +10.6pp between them. Both configurations are NEGATIVE on dev, so this compares two losing setups over a period where the long-only book has never worked. It is the third piece of evidence that portfolio construction, not prediction, is the binding constraint |
 | peer groups got smaller (7.7 -> 5.9 names, corr 0.388 -> 0.357) | expected, and it is the fix working. Demeaning by the INVESTABLE cross-section removes more of the common factor than demeaning by every ticker in the panel did, so less residual correlation is left and fewer pairs clear `MIN_CORR`. That threshold was calibrated against the old, inflated numbers — it is now effectively stricter. Not retuned, because tuning it against the same data that revealed it is how the dev/holdout orderings got reversed before |
-| a feature with a NULL raw value still has a RANK | **KNOWN DEFECT.** `PERCENT_RANK() OVER (ORDER BY col)` sorts NULLs last, so every row missing a value is bunched at the TOP of that day's ranking. Measured 2026-08-04: 47 names with no `peer_corr` all scored 0.836 while the 234 real values spanned 0.000-0.832 — "no data" reads to the model as "higher than 83% of the market". 33.7% of `peer_corr` rows sample-wide. This is invariant 3 one layer up, it affects EVERY feature with gaps, and fixing it moves every rank in the file. Tracked separately |
+| `research.features` stores REAL, but the parquet is DOUBLE | deliberate. `dataset.load()` casts every feature to float32 before the model sees one, so the extra bits are never consumed — 531 MB instead of 918 MB, and both paths round the same double to the same float32. Prices, returns and labels stay DOUBLE, because that reasoning does not cover them |
+| a feature with a NULL raw value has a NULL rank, not 0.5 | correct, and it was a real defect until `c2d20a9`. `PERCENT_RANK() OVER (ORDER BY col)` sorts NULLs last, so every row missing a value was bunched at the TOP of that day's ranking: measured 2026-08-04, 47 names with no `peer_corr` all scored 0.836 while the 234 real values spanned 0.000-0.832 — "no data" read to the model as "higher than 83% of the market". Invariant 3 one layer up. Fixed by ranking only real values; imputing a middle value instead would be inventing data. Verified on the published table: 317,121 rows have no `peer_corr` and **none** carries a rank |
 
 ## Where the reasoning lives
 
@@ -89,14 +95,16 @@ actually traded on which day.
 - `label/forward.py` — entry/exit asymmetry
 - `model/cv.py` — the purge diagram
 - `backtest/engine.py` — NaN prices as the untradeable mechanism
+- `io/publish.py` — the schema boundary, and why the holdout is its own view
 
 ## Build, run, test
 
 ```bash
-.venv/Scripts/python -m pytest -q          # 93 tests, no database needed
+.venv/Scripts/python -m pytest -q          # 124 tests, no database needed
 .venv/Scripts/vnr pipeline                 # needs Postgres on 5432
 .venv/Scripts/vnr train --controls         # ~7 min, runs the leakage checks
 .venv/Scripts/vnr freeze                   # ~10 min, writes models/frozen/
+.venv/Scripts/vnr publish                  # ~20s, labelled sample -> research schema
 ```
 
 Install core before extras, and always with `-e`: `pip install ".[backtest]"`

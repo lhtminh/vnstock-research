@@ -50,9 +50,39 @@ That runs mirror → clean → panel → label → peers → features. Then:
 | `alpha` | `reports/alpha-*.md` | IC, decay, quantile spread, turnover, redundancy |
 | `train` | `data/oos_*.parquet` | Walk-forward with purged folds |
 | `backtest` | stdout | vectorbt, VN costs, capacity cap |
+| `publish` | Postgres `research` schema | The labelled sample, for SQL from outside this repo |
 
 Everything is DuckDB SQL over Parquet. The full pipeline is about three minutes
 on 4.8M bars.
+
+## Reading the labelled data from SQL
+
+`vnr publish` copies the labelled sample into the **`research` schema** of the
+same database the service writes to. `public` is the service's and is never
+touched.
+
+| Object | Rows | What |
+|---|---|---|
+| `research.features` | 943k | The feature matrix, raw + rank, universe rows |
+| `research.labels` | 943k | Forward returns at 1/5/10/21, tradeable entry |
+| `research.training_sample` | 644k | **view** — the matrix the model trains on |
+| `research.holdout_sample` | 212k | **view** — the frozen holdout, kept separate on purpose |
+| `research.publish_runs` | — | One row per publish, with the mirror snapshot it came from |
+
+`training_sample` is generated from `config/model.yaml` and the same target
+expression `dataset.load()` uses, so it is the training matrix rather than
+something shaped like it — `test_publish.py` pins that, and the two were checked
+row for row on all 643,548 rows and 59 features.
+
+```sql
+SELECT ticker, date, y, target FROM research.training_sample
+WHERE date = '2023-12-29' ORDER BY y DESC LIMIT 10;
+```
+
+It is **not** part of `vnr pipeline`. The pipeline runs against the clock before
+the 15:00 trading decision and nothing on that path reads these tables, so
+publishing is a separate ~20s step; `publish_runs.mirror_as_of` against
+`data/mirror/manifest.json` tells you whether the copy is current.
 
 ## What the data actually holds
 
