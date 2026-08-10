@@ -70,6 +70,35 @@ def _literal(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
+def check_registry_matches(parquet_columns: set[str]) -> None:
+    """Refuse to publish a catalog that describes a file it does not match.
+
+    The catalog is generated from the registry HERE; the table comes from a
+    features.parquet built by an earlier `vnr pipeline`, possibly against a
+    different registry. Add a feature and publish without rebuilding, and the
+    catalog names a column that does not exist — the dimension is metadata with
+    nothing under it, which is worse than absent because it reads as true.
+
+    Nothing in the database can enforce this: features are COLUMNS, and a
+    foreign key relates rows. So it is checked once, here, before anything is
+    written. Publishing would otherwise fail later at CREATE VIEW with a bare
+    "column does not exist", after the tables had already been replaced.
+    """
+    from vnresearch.features.registry import all_features
+
+    missing = sorted(
+        n for name in all_features() for n in (name, f"{name}_rank") if n not in parquet_columns
+    )
+    if missing:
+        shown = ", ".join(missing[:6])
+        more = f" (+{len(missing) - 6} more)" if len(missing) > 6 else ""
+        raise ValueError(
+            f"{len(missing)} registered feature column(s) are not in features.parquet: "
+            f"{shown}{more}. The file was built by an older registry — run `vnr pipeline` "
+            f"before publishing."
+        )
+
+
 def _feature_columns(con, path: str) -> list[str]:
     """The SELECT list for research.features, narrowing features to REAL.
 
@@ -80,6 +109,7 @@ def _feature_columns(con, path: str) -> list[str]:
 
     narrow = {n for name in all_features() for n in (name, f"{name}_rank")}
     cols = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()
+    check_registry_matches({name for name, *_ in cols})
     out = []
     for name, dtype, *_ in cols:
         out.append(f"{name}::REAL AS {name}" if name in narrow and dtype == "DOUBLE" else name)
@@ -214,6 +244,10 @@ def build(verbose: bool = True) -> dict[str, Any]:
 
     con = _connect()
     try:
+        # Before any DDL: a registry/parquet mismatch must not leave the schema
+        # half-replaced, and this is the only moment it can be caught cheaply.
+        cols = _feature_columns(con, feats_path.as_posix())
+
         _exec(con, f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
         # Views depend on the tables, and Postgres refuses to drop a table out
         # from under one. They are rebuilt from config at the end anyway.
@@ -221,7 +255,6 @@ def build(verbose: bool = True) -> dict[str, Any]:
             _exec(con, f"DROP VIEW IF EXISTS {SCHEMA}.{v}")
 
         t0 = time.time()
-        cols = _feature_columns(con, feats_path.as_posix())
         con.execute(
             f"CREATE OR REPLACE TABLE pg.{SCHEMA}.features AS "
             f"SELECT {', '.join(cols)} FROM read_parquet('{feats_path.as_posix()}')"

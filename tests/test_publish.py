@@ -148,19 +148,23 @@ def test_features_narrow_to_real_and_prices_do_not(tmp_path):
     """REAL is only safe because dataset.load() casts to float32 anyway. That
     reasoning covers features; it does not cover a price or a traded value, so
     those must stay DOUBLE."""
-    name = min(all_features())
+    # Full width, because _feature_columns now also checks the file carries
+    # every registered feature — a one-feature fixture is a file no publish
+    # would accept.
+    feats = sorted(all_features())
+    cells = ["'AAA' AS ticker", "DATE '2020-01-02' AS date"]
+    cells += [f"{v}::DOUBLE AS {c}" for v, c in ((1.5, "close"), (2.5, "adtv"))]
+    cells += [f"3.5::DOUBLE AS {n}" for f in feats for n in (f, f"{f}_rank")]
+
     path = tmp_path / "f.parquet"
     con = duckdb.connect()
-    con.execute(
-        f"CREATE TABLE t AS SELECT 'AAA' AS ticker, DATE '2020-01-02' AS date, "
-        f"1.5::DOUBLE AS close, 2.5::DOUBLE AS adtv, "
-        f"3.5::DOUBLE AS {name}, 4.5::DOUBLE AS {name}_rank"
-    )
+    con.execute(f"CREATE TABLE t AS SELECT {', '.join(cells)}")
     con.execute(f"COPY t TO '{path.as_posix()}' (FORMAT parquet)")
 
     cols = publish._feature_columns(con, path.as_posix())
-    assert f"{name}::REAL AS {name}" in cols
-    assert f"{name}_rank::REAL AS {name}_rank" in cols
+    for f in feats:
+        assert f"{f}::REAL AS {f}" in cols
+        assert f"{f}_rank::REAL AS {f}_rank" in cols
     assert "close" in cols and "close::REAL AS close" not in cols
     assert "adtv" in cols and "adtv::REAL AS adtv" not in cols
     con.close()
@@ -215,6 +219,26 @@ def test_every_catalogued_feature_reaches_the_training_matrix(sql_train):
     for col in ranks:
         assert col in sql_train
     con.close()
+
+
+def test_a_catalog_that_outruns_the_parquet_is_refused():
+    """The catalog comes from the registry; the table comes from a parquet built
+    by an earlier pipeline run. Add a feature, publish without rebuilding, and
+    the catalog names a dimension for a column that does not exist — metadata
+    with nothing under it, which reads as true. No database constraint can catch
+    this: features are COLUMNS and a foreign key relates rows."""
+    complete = {n for name in all_features() for n in (name, f"{name}_rank")}
+    publish.check_registry_matches(complete)  # the matching case must not raise
+
+    stale = complete - {"rsi_14_rank"}
+    with pytest.raises(ValueError, match="rsi_14_rank"):
+        publish.check_registry_matches(stale)
+
+
+def test_the_refusal_says_which_command_fixes_it():
+    """A failure that names the problem and not the remedy gets worked around."""
+    with pytest.raises(ValueError, match="vnr pipeline"):
+        publish.check_registry_matches(set())
 
 
 def test_comment_text_with_an_apostrophe_stays_valid_sql():
