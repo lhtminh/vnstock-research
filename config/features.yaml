@@ -22,9 +22,48 @@ label:
   entry_price: open
 
 features:
-  momentum_windows: [5, 21, 63, 126, 252]
+  # Every window below is READ by a feature module — see registry.windows().
+  #
+  # This block used to be decorative: the numbers lived in the Python and this
+  # was a description of them that had already drifted (it omitted the 1-session
+  # return that the registry has always produced). A config nobody reads is
+  # worse than no config, because it invites a change that does nothing.
+  #
+  # Changing a number here changes the feature NAME too, so a frozen model that
+  # was fitted on the old name will refuse to score until it is re-frozen. That
+  # is the intended behaviour, not an obstacle.
+  momentum_windows: [1, 5, 21, 63, 126, 252]
   vol_windows: [21, 63]
   beta_window: 60
-  # Winsorize cross-sectional features at these percentiles before ranking,
-  # so one broken print cannot dominate a day's z-scores.
-  winsor: [0.01, 0.99]
+  # A second, slower beta. Beta alone says how market-sensitive a stock is; the
+  # pair says whether that sensitivity is stable, which is a different fact.
+  beta_window_long: 120
+  # Technical indicators. RSI and MACD use SIMPLE moving averages, not Wilder or
+  # exponential smoothing: those are recursive over all history and cannot be
+  # written as a bounded `ROWS BETWEEN n PRECEDING` frame, which is the property
+  # test_features_are_truncation_invariant relies on. For a ranking model the
+  # two forms of the same span correlate ~0.95+.
+  rsi_window: 14
+  macd_fast: 12
+  macd_slow: 26
+  bollinger_window: 20
+  ma_windows: [50, 200]
+  stoch_window: 14
+  atr_window: 14
+  # Distribution shape and the Vietnam-specific limit-hit behaviour.
+  shape_window: 21
+  limit_window: 63
+  # Liquidity dynamics.
+  amihud_windows: [21, 63]
+  volume_window: 21
+
+  # There is deliberately NO winsor setting here, and it should not come back.
+  #
+  # This file used to declare `winsor: [0.01, 0.99]` and nothing read it. That
+  # was lucky rather than an oversight worth fixing: the model consumes RANKS,
+  # and clipping is a monotonic transform, so winsorizing before ranking cannot
+  # change a single ordering. Verified — rank([1,2,3,4,1000]) and its clipped
+  # version are identical.
+  #
+  # Winsorization only matters for z-scores. If a z-scored feature is ever
+  # added, add it there and nowhere else.

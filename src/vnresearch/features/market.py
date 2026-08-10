@@ -1,18 +1,33 @@
 """Market-relative features, against VNINDEX.
 
-These are NULL before 2019-09-12 because index_series starts there, while bars
-go back to 2002. That is a data boundary, not a bug — do not fill it.
+These are NULL before 2004-01-05, where index_series begins, while bars go back
+to 2002. That is a data boundary, not a bug — do not fill it. (It was
+2019-09-12 before the index history was extended; the sample starts at 2009 for
+a different reason, which is that earlier years have no cross-section to rank.)
 """
 
 from __future__ import annotations
 
-from vnresearch.features.registry import register, win
+from vnresearch.features.registry import register, win, windows
 
 _CAT = "market"
-_W = 60
+_CFG = windows()
+_W = _CFG["beta_window"]
+_WL = _CFG["beta_window_long"]
 
 register("beta_60", f"REGR_SLOPE(ret, mkt_ret) {win(_W)}", _CAT, _W)
 register("alpha_60", f"REGR_INTERCEPT(ret, mkt_ret) {win(_W)}", _CAT, _W)
+
+# The same beta over a slower window. On its own it says little that beta_60
+# does not; as a PAIR the two say whether a name's market sensitivity is stable,
+# and an unstable beta makes the residual target noisier for that stock.
+register(f"beta_{_WL}", f"REGR_SLOPE(ret, mkt_ret) {win(_WL)}", _CAT, _WL)
+
+# Correlation with the market, signed. Not a restatement of beta: beta is
+# correlation scaled by the volatility ratio, so a low-vol stock that tracks the
+# index perfectly has a low beta and a correlation near 1. Which of those a
+# model wants depends on what else it is holding.
+register(f"mkt_corr_{_W}", f"CORR(ret, mkt_ret) {win(_W)}", _CAT, _W)
 
 # Idiosyncratic volatility: the part of the move the market does not explain.
 # Derived from R^2 rather than by regressing residuals, which SQL cannot do in

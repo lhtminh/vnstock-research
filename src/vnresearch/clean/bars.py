@@ -34,16 +34,40 @@ _TICK_SQL = """
     END
 """
 
+
+# Date-dependent, because the bands widened on 2013-01-15 (see bands.py). Using
+# today's numbers on a 2010 bar reclassifies every real limit-up as an ordinary
+# session and lets the backtest fill where there was no offer side.
+#
 # Cast to DOUBLE: bare decimal literals bind as DECIMAL in DuckDB, which then
 # mixes with the DOUBLE returns in every comparison below.
-_BAND_SQL = f"""
-    CASE s.exchange
-        WHEN 'HOSE'  THEN {bands.BANDS["HOSE"]}::DOUBLE
-        WHEN 'HNX'   THEN {bands.BANDS["HNX"]}::DOUBLE
-        WHEN 'UPCOM' THEN {bands.BANDS["UPCOM"]}::DOUBLE
-        ELSE {bands.DEFAULT_BAND}::DOUBLE
+def _band_sql() -> str:
+    def table(d: dict[str, float]) -> str:
+        return f"""CASE s.exchange
+            WHEN 'HOSE'  THEN {d["HOSE"]}::DOUBLE
+            WHEN 'HNX'   THEN {d["HNX"]}::DOUBLE
+            WHEN 'UPCOM' THEN {d["UPCOM"]}::DOUBLE
+            ELSE {bands.DEFAULT_BAND}::DOUBLE
+        END"""
+
+    return f"""
+    CASE WHEN lagged.date < DATE '{bands.BAND_REFORM}'
+         THEN {table(bands.BANDS_BEFORE)}
+         ELSE {table(bands.BANDS_AFTER)}
     END
 """
+
+
+_BAND_SQL = _band_sql()
+
+
+def _band_unknown_sql() -> str:
+    """True on dates whose operative price limit cannot be stated. See bands.py."""
+    if not bands.BAND_UNKNOWN_PERIODS:
+        return "false"
+    return " OR ".join(
+        f"(b.date >= DATE '{lo}' AND b.date < DATE '{hi}')" for lo, hi in bands.BAND_UNKNOWN_PERIODS
+    )
 
 
 def _sql() -> str:
@@ -74,15 +98,23 @@ t AS (
         b.*,
         LEAST(GREATEST(b.tick / NULLIF(b.prev_close, 0), {bands.MIN_TOLERANCE}),
               {bands.MAX_TOLERANCE}) AS tol,
-        -- Reference price we can actually reason about.
+        -- Reference price we can actually reason about. The last clause covers
+        -- the 2008 emergency, when the limit was changed repeatedly; assuming
+        -- the standard band there would read a locked bar as tradeable.
         (b.prev_close IS NOT NULL
          AND b.prev_close >= {bands.MIN_PRICE_FOR_BAND}
-         AND b.ref_gap_days <= {bands.MAX_REF_GAP_DAYS}) AS ref_ok
+         AND b.ref_gap_days <= {bands.MAX_REF_GAP_DAYS}
+         AND NOT ({_band_unknown_sql()})) AS ref_ok
     FROM b
 )
 SELECT
     ticker, date, open, high, low, close, volume, adjustment_epoch,
     exchange, symbol_status, prev_close, ret, ref_gap_days,
+    -- The operative limit for this session, as a fraction. NULL where the band
+    -- is not knowable — same rule the status column follows, so a feature built
+    -- on it inherits "unknown, never guessed" instead of silently dividing by
+    -- the current-era 7%.
+    CASE WHEN ref_ok THEN band END AS band_pct,
     CASE
         WHEN volume IS NULL OR volume = 0 THEN 'no_trade'
         WHEN high < GREATEST(open, close) - 0.01

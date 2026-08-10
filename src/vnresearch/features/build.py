@@ -33,7 +33,7 @@ _KEYS = [
 ]
 
 
-def _raw_sql(panel_path: str) -> tuple[str, list[str]]:
+def _raw_sql(panel_path: str, join_peers: bool = True) -> tuple[str, list[str]]:
     feats = all_features()
     cols = []
     for f in sorted(feats.values(), key=lambda x: (x.category, x.name)):
@@ -41,10 +41,36 @@ def _raw_sql(panel_path: str) -> tuple[str, list[str]]:
         # once the ticker has the history its definition assumes.
         cols.append(f"CASE WHEN session_idx >= {f.lookback} THEN ({f.sql}) END AS {f.name}")
 
+    # Peer features are computed in pandas (correlation matrices are awkward in
+    # SQL) and joined here rather than in the panel, because peers.py reads the
+    # panel and joining there would be circular.
+    #
+    # join_peers=False is for callers whose panel ALREADY carries the peer
+    # columns — the tests build a synthetic one that way. Joining as well would
+    # give two columns of the same name, and which one the feature SQL then
+    # resolves to is not something to leave to chance.
+    peers_path = config.path("data/features/peers.parquet")
+    if join_peers and peers_path.exists():
+        peer_join = f"""
+    LEFT JOIN read_parquet('{peers_path.as_posix()}') pr
+           ON pr.ticker = b.ticker AND pr.date = b.date"""
+        peer_cols = "pr.peer_ret_1, pr.peer_ret_5, pr.peer_ret_21, pr.peer_corr, pr.peer_n"
+    else:
+        peer_join = ""
+        peer_cols = """CAST(NULL AS DOUBLE) AS peer_ret_1,
+                       CAST(NULL AS DOUBLE) AS peer_ret_5,
+                       CAST(NULL AS DOUBLE) AS peer_ret_21,
+                       CAST(NULL AS DOUBLE) AS peer_corr,
+                       CAST(NULL AS BIGINT)  AS peer_n"""
+
     sql = f"""
-WITH p AS (
+WITH j AS (
+    SELECT b.*, {peer_cols}
+    FROM read_parquet('{panel_path}') b{peer_join}
+),
+p AS (
     SELECT *, ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date) AS session_idx
-    FROM read_parquet('{panel_path}')
+    FROM j
 )
 SELECT {", ".join(_KEYS)}, session_idx,
        {", ".join(cols)}

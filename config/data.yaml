@@ -16,6 +16,15 @@ tables:
   - market_snapshot
   - company_snapshot
   - index_membership
+  # v8: share-count events, classified by whether they actually dilute.
+  # A view in the service, mirrored here like a table.
+  - v_share_events
+  # v8: macro. Stored and mirrored, but NOT model features — every value is
+  # the same for every stock on a date, so a cross-sectional ranking model
+  # cannot use one to order two stocks. They wait for sector coverage.
+  - macro_series
+  - gold_price_vn
+  - fx_rate_vn
 
 # Bars before this are kept but rarely used: the market was tiny and the
 # adjustment history is least reliable. Set to null to mirror everything.

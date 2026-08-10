@@ -5,14 +5,42 @@ dataset:
   # would bake the market regime into the model — 2% daily vol means "calm" in
   # one year and "panic" in another, and one split cannot be right for both.
   use_ranked_features: true
-  # Skip the earliest years: the market was small and the adjustment history is
-  # least reliable there. Set to null to use everything.
-  start_date: "2010-01-01"
+
+  # What the model ranks:
+  #   residual  fwd_ret - beta * benchmark_ret
+  #   raw       fwd_ret
+  # Simple excess return (fwd_ret - benchmark_ret) is NOT an option because it
+  # is rank-invariant: every stock on a given day shares the same benchmark
+  # window, so subtracting it leaves the within-day ordering unchanged. Only the
+  # beta term varies by stock, and it is what stops the model from rewarding a
+  # name that rose merely because it is high beta and the market rose.
+  target: residual
+
+  # 2009, not 2004, and the reason is liquidity rather than benchmark coverage.
+  #
+  # index_series was extended back to 2004-01-05, so a benchmark now exists for
+  # the whole span. What does not exist is a cross-section to rank: measured,
+  # 2004 had 14 tickers trading and NONE above the 1bn VND ADTV floor, 2005 had
+  # 25 and none, 2006 had 22 liquid names, and 2008 — the -66% year — had 30,
+  # exactly the minimum a daily cross-sectional statistic needs. 2009 is the
+  # first year with a real universe (117 liquid names), and by 2010 it is 180.
+  #
+  # 2008 is deliberately left OUT of training and kept as a stress test. A
+  # 30-name market with different price limits and settlement is structurally
+  # unlike today's; a model should be MEASURED against it, not fitted to it.
+  start_date: "2009-01-01"
+
+  # FROZEN HOLDOUT. Excluded from load() unless explicitly requested. The
+  # pipeline was developed while watching results, so the walk-forward score is
+  # optimistic by an unknown amount; this is the only untouched data left.
+  # Do not train on it, tune against it, or look at it more than once.
+  holdout_start: "2024-01-01"
 
 cv:
-  n_splits: 6
+  # Smaller than before because the benchmarked sample is 6.8 years, not 16.
+  n_splits: 4
   embargo: 5
-  min_train_days: 750   # ~3 years before the first fold is scored
+  min_train_days: 400
 
 lightgbm:
   objective: regression      # on the cross-sectional rank, 0..1

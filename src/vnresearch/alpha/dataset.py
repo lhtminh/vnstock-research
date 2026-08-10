@@ -16,13 +16,38 @@ def feature_names(ranked: bool = True) -> list[str]:
     return [f"{n}_rank" for n in names] if ranked else names
 
 
-def open_joined() -> duckdb.DuckDBPyConnection:
-    """Connection with a `d` view: features joined to labels on (ticker, date)."""
+def open_joined(
+    include_holdout: bool = False, apply_start: bool = True
+) -> duckdb.DuckDBPyConnection:
+    """Connection with a `d` view: features joined to labels on (ticker, date).
+
+    THE HOLDOUT IS EXCLUDED BY DEFAULT, and this was a real defect before it
+    was: alpha analysis filtered on `in_universe` and nothing else, so every IC
+    number was computed over data that included the frozen holdout. Features
+    were then judged to "work" partly on the evidence they were supposed to be
+    tested against later — which quietly spends the holdout without anyone
+    deciding to.
+
+    Pass include_holdout=True only for a deliberate final measurement.
+
+    apply_start=False lifts the configured start date, which the 2008 stress
+    test needs: that window sits BEFORE the training sample begins and would
+    otherwise be filtered away by the very setting that excludes it from
+    training.
+    """
     feats = config.path("data/features/features.parquet")
     labels = config.path("data/clean/labels.parquet")
     for p in (feats, labels):
         if not p.exists():
             raise FileNotFoundError(f"{p} missing — run the earlier stages first")
+
+    cfg = config.load("model")["dataset"]
+    where = ["f.in_universe"]
+    if apply_start and cfg.get("start_date"):
+        where.append(f"f.date >= DATE '{cfg['start_date']}'")
+    holdout = cfg.get("holdout_start")
+    if holdout and not include_holdout:
+        where.append(f"f.date < DATE '{holdout}'")
 
     con = duckdb.connect()
     con.execute(
@@ -31,6 +56,6 @@ def open_joined() -> duckdb.DuckDBPyConnection:
             FROM read_parquet('{feats.as_posix()}') f
             JOIN read_parquet('{labels.as_posix()}') l
               ON l.ticker = f.ticker AND l.date = f.date
-            WHERE f.in_universe"""
+            WHERE {" AND ".join(where)}"""
     )
     return con

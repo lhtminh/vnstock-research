@@ -1,8 +1,24 @@
 # Backtest settings.
 
 portfolio:
-  top_n: 30              # names held, equal weighted
+  top_n: 50              # names held, equal weighted (the BUY threshold)
   rebalance_every: 5     # sessions; matches the 5-session label
+
+  # SELL threshold. A holding is kept until it falls past this rank, so a name
+  # drifting from 48 to 61 generates no trade. Chosen on the 2021-2023
+  # development window; wide buffers won at every entry width and frequency
+  # tested. Set equal to top_n to disable.
+  #
+  # Effect on the frozen holdout, all else equal:
+  #   no buffer          turnover 73.7%  cost 22.3%/yr  CAGR  -2.6%  alpha -18.05%
+  #   top 30, exit 150   turnover 28.5%  cost  8.6%/yr  CAGR +13.3%  alpha  -0.49%
+  #   top 50, exit 200   turnover 20.3%  cost  6.1%/yr  CAGR +12.3%  alpha  -1.03%
+  #
+  # The last two are the same result. Development ranked them 4 points of alpha
+  # apart and the holdout ranked them the other way by half a point — the
+  # parameter search is fitting noise, not finding structure. 50/200 is kept
+  # for the two reasons that are NOT noise: lower turnover and more names.
+  exit_rank: 200
   init_cash: 1.0e9       # VND
   # Position size cap as a fraction of the name's 20-session ADTV. Above this
   # you are buying liquidity that was not there.
@@ -17,3 +33,40 @@ costs:
   slippage: 0.0010       # 0.10%, thin books and wide spreads
 
 benchmark: VNINDEX
+
+# Exposure control. Off by default so the base result stays comparable with
+# everything measured before it; turn on to reproduce the crisis-survival runs.
+#
+# Neither rule predicts anything. Volatility rises during a crash rather than
+# after it, and an index below its own long average is already falling — both
+# react to what has happened, which is why they are implementable.
+# Selected on DEVELOPMENT (2010-2023) across six variants, not on the holdout.
+#
+#   variant                DEV alpha   DEV dd   2008 CAGR   2008 dd
+#   none                      -4.56%    65.7%     -42.78%     84.0%
+#   vol-target only           -5.22%    62.8%     -25.89%     68.3%
+#   trend only, full off      -1.93%    55.6%     +18.37%     24.5%   <- chosen
+#   trend only, half off      -2.75%    57.4%     -17.20%     62.2%
+#   both, full off            -2.35%    55.8%     +11.58%     16.6%
+#
+# Two things that table settles. Half-measures do not work: cutting to 50%
+# barely dented 2008, because surviving a -66% year requires actually being out.
+# And volatility targeting ALONE was the worst variant on development — it
+# de-risks after the volatility has arrived, which is late.
+#
+# Off by default. Turning it on is a risk-preference decision, not a
+# statistical one, and the numbers point in opposite directions depending on
+# whether the period you care about contains a crash:
+#
+#   2007-08 stress   CAGR -42.78% -> +18.37%, drawdown 84.0% -> 24.5%
+#   2024-26 holdout  alpha +7.50% ->   +0.60%, CAGR 18.21% -> 8.91%
+#
+# The holdout is 2.5 years of a market that rose 18.8% a year. That is exactly
+# the sample where crash insurance looks worst, and it should not be read as
+# evidence the insurance is bad — only that it was not needed there.
+risk:
+  enabled: false
+  target_vol: null      # vol targeting alone scored WORST on development
+  vol_window: 60
+  trend_window: 200     # sessions; index below its own MA -> risk_off
+  risk_off: 0.0         # 0 = fully in cash. VN30 futures did not exist in 2008

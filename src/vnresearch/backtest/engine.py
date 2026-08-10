@@ -23,8 +23,17 @@ import pandas as pd
 import vectorbt as vbt
 
 from vnresearch import config
+from vnresearch.backtest import rebalance, risk
 from vnresearch.backtest.costs import Costs
+
+# Re-exported: these moved to metrics.py so a caller reporting a live book does
+# not have to import vectorbt for them. Everything that imported them from here
+# still works.
+from vnresearch.backtest.metrics import annual_table, performance
+from vnresearch.clean.bands import MAX_INDEX_MOVE
 from vnresearch.io import duck
+
+__all__ = ["Result", "annual_table", "performance", "run"]
 
 
 @dataclass
@@ -37,6 +46,14 @@ class Result:
     @property
     def equity(self) -> pd.Series:
         return self.portfolio.value()
+
+    @property
+    def performance(self) -> dict:
+        return performance(self.equity, self.benchmark)
+
+    @property
+    def annual(self) -> pd.DataFrame:
+        return annual_table(self.equity, self.benchmark)
 
 
 def _price_matrices(tickers: list[str], start, end, allow_untradeable: bool):
@@ -71,36 +88,46 @@ def _target_weights(
     top_n: int,
     every: int,
     adtv: pd.DataFrame,
-    init_cash: float,
+    equity: pd.Series,
     max_adtv_frac: float,
+    exit_rank: int | None = None,
 ) -> pd.DataFrame:
-    """Equal-weight the top N on each rebalance date, held until the next one."""
-    w = pd.DataFrame(0.0, index=dates, columns=tickers)
+    """Equal-weight the top N on each rebalance date, held until the next one.
+
+    `equity` is the portfolio value at each date, NOT the starting cash. The cap
+    is a constraint on the position's VND size, so it has to be divided by the
+    money actually being deployed. Using starting cash makes the cap loosen by
+    exactly the factor the book has compounded — a 7x gain silently turns a
+    10%-of-ADTV limit into 70%.
+    """
+    # NaN means "no instruction", which is what lets ffill carry a target
+    # between rebalances. A rebalance date writes the COMPLETE vector, zeros
+    # included, so names that dropped out are actually sold.
+    w = pd.DataFrame(np.nan, index=dates, columns=tickers)
     rebal = dates[::every]
+    chosen = rebalance.select(preds, rebal, top_n, exit_rank)
 
     for d in rebal:
-        day = preds[preds["date"] == d]
-        if day.empty:
-            continue
-        picks = day.nlargest(top_n, "pred")["ticker"].tolist()
-        picks = [t for t in picks if t in w.columns]
+        picks = [t for t in chosen.get(d, []) if t in w.columns]
         if not picks:
             continue
         weight = 1.0 / len(picks)
 
         # Capacity: never take more than a slice of the name's daily turnover.
         # Without this the backtest buys volume that did not exist.
-        if d in adtv.index:
-            cap = (max_adtv_frac * adtv.loc[d, picks] / init_cash).astype(float)
+        capital = float(equity.get(d, equity.iloc[0]))
+        if d in adtv.index and capital > 0:
+            cap = (max_adtv_frac * adtv.loc[d, picks] / capital).astype(float)
             sized = np.minimum(weight, cap.fillna(0.0).to_numpy())
         else:
             sized = np.full(len(picks), weight)
 
-        w.loc[d, picks] = sized
+        row = pd.Series(0.0, index=w.columns)
+        row[picks] = sized
+        w.loc[d] = row
 
-    # Hold between rebalances; a 0 row would be read as "sell everything".
-    w = w.replace(0.0, np.nan).ffill().fillna(0.0)
-    return w
+    # Carry the last full target forward; flat before the first rebalance.
+    return w.ffill().fillna(0.0)
 
 
 def run(
@@ -108,14 +135,24 @@ def run(
     allow_untradeable_fills: bool = False,
     top_n: int | None = None,
     verbose: bool = True,
+    costs: Costs | None = None,
+    rebalance_every: int | None = None,
+    exit_rank: int | None = None,
+    exposure: pd.Series | None = None,
 ) -> Result:
-    """Backtest out-of-sample predictions (date, ticker, pred)."""
+    """Backtest out-of-sample predictions (date, ticker, pred).
+
+    `costs` and `rebalance_every` override the config so the same predictions
+    can be run under different frictions. Running with zero costs is the way to
+    separate "the signal is wrong" from "the wrapper is too expensive" — they
+    look identical in a single equity curve.
+    """
     cfg = config.load("backtest")
     pcfg = cfg["portfolio"]
     top_n = top_n or pcfg["top_n"]
-    every = pcfg["rebalance_every"]
+    every = rebalance_every or pcfg["rebalance_every"]
     init_cash = float(pcfg["init_cash"])
-    costs = Costs.load()
+    costs = costs if costs is not None else Costs.load()
 
     preds = oos.copy()
     preds["date"] = pd.to_datetime(preds["date"])
@@ -129,36 +166,83 @@ def run(
     tickers = [t for t in tickers if t in close.columns]
     close, price, adtv = close[tickers], price[tickers], adtv[tickers]
 
-    weights = _target_weights(
-        preds, close.index, tickers, top_n, every, adtv, init_cash, pcfg["max_adtv_frac"]
-    )
+    exit_rank = exit_rank if exit_rank is not None else pcfg.get("exit_rank")
 
-    # Signals are formed on a session's close, so they can only be acted on at
-    # the NEXT session's open. Shifting the weight matrix is what enforces that.
-    weights = weights.shift(1).fillna(0.0)
+    # Risk overlay. Scales the whole book up or down without touching WHICH
+    # names it holds — the 2008 stress test showed the ranking was fine and the
+    # exposure was not, so the two are kept separable.
+    rcfg = cfg.get("risk") or {}
+    if exposure is None and rcfg.get("enabled"):
+        bench_level = _benchmark(close.index, cfg["benchmark"])
+        exposure = risk.combined_exposure(
+            bench_level,
+            target_vol=rcfg.get("target_vol"),
+            vol_window=rcfg.get("vol_window", 60),
+            trend_window=rcfg.get("trend_window"),
+            risk_off=rcfg.get("risk_off", 0.0),
+        )
+    if exposure is not None:
+        exposure = exposure.reindex(close.index).ffill().fillna(1.0).clip(0.0, 1.0)
 
-    pf = vbt.Portfolio.from_orders(
-        close=close,
-        size=weights,
-        size_type="targetpercent",
-        price=price,
-        fees=costs.symmetric_fee,
-        slippage=costs.slippage,
-        init_cash=init_cash,
-        cash_sharing=True,
-        group_by=True,
-        call_seq="auto",  # sell before buy, so cash is available to rebalance
-        freq="1D",
-    )
+    def _simulate(equity: pd.Series):
+        w = _target_weights(
+            preds,
+            close.index,
+            tickers,
+            top_n,
+            every,
+            adtv,
+            equity,
+            pcfg["max_adtv_frac"],
+            exit_rank,
+        )
+        # Signals are formed on a session's close, so they can only be acted on
+        # at the NEXT session's open. Shifting the weights is what enforces that.
+        w = w.shift(1).fillna(0.0)
+        if exposure is not None:
+            w = w.mul(exposure, axis=0)
+        return w, vbt.Portfolio.from_orders(
+            close=close,
+            size=w,
+            size_type="targetpercent",
+            price=price,
+            fees=costs.symmetric_fee,
+            slippage=costs.slippage,
+            init_cash=init_cash,
+            cash_sharing=True,
+            group_by=True,
+            call_seq="auto",  # sell before buy, so cash is available to rebalance
+            freq="1D",
+        )
+
+    # Two passes, because the capacity cap depends on portfolio value and
+    # portfolio value depends on the cap. Pass one prices the cap off starting
+    # cash; pass two re-prices it off the equity curve that produced. One
+    # iteration is enough — the cap only binds on thin names, so the feedback is
+    # small and converges rather than oscillating.
+    flat = pd.Series(init_cash, index=close.index)
+    _, first = _simulate(flat)
+    weights, pf = _simulate(first.value().reindex(close.index).ffill().fillna(init_cash))
 
     bench = _benchmark(close.index, cfg["benchmark"])
     stats = pf.stats()
     if verbose:
-        _print(stats, bench, pf, costs)
+        _print(stats, bench, pf, costs, weights)
     return Result(portfolio=pf, stats=stats, benchmark=bench, weights=weights)
 
 
 def _benchmark(index: pd.DatetimeIndex, code: str) -> pd.Series:
+    """The benchmark level, with impossible prints removed.
+
+    VNINDEX carries four bad closes (2007-07-23/24, 2008-08-16/19) implying
+    daily moves of -55%, +120%, +84% and -43%. A broad index cannot do that, and
+    leaving them in puts a spike in the curve every beta, correlation and excess
+    return in the report is measured against.
+
+    A defective bar is dropped and the level carried forward, rather than
+    interpolated: forward-filling states "we do not know it changed", which is
+    true, where an interpolated level would invent a move.
+    """
     con = duck.open_mirror()
     try:
         df = con.execute(
@@ -166,42 +250,44 @@ def _benchmark(index: pd.DatetimeIndex, code: str) -> pd.Series:
         ).df()
     finally:
         con.close()
-    s = df.set_index(pd.to_datetime(df["date"]))["close"]
+    s = df.set_index(pd.to_datetime(df["date"]))["close"].astype(float)
+    bad = s.pct_change().abs() > MAX_INDEX_MOVE
+    if bad.any():
+        s = s.mask(bad).ffill()
     return s.reindex(index).ffill()
 
 
-def _cagr(first: float, last: float, years: float) -> float:
-    if years <= 0 or first <= 0:
-        return float("nan")
-    return 100 * ((last / first) ** (1 / years) - 1)
-
-
-def _print(stats: pd.Series, bench: pd.Series, pf, costs: Costs) -> None:
-    keys = [
-        "Start",
-        "End",
-        "Total Return [%]",
-        "Max Drawdown [%]",
-        "Sharpe Ratio",
-        "Sortino Ratio",
-        "Win Rate [%]",
-        "Total Trades",
-    ]
-    for k in keys:
+def _print(stats: pd.Series, bench: pd.Series, pf, costs: Costs, weights: pd.DataFrame) -> None:
+    for k in ["Start", "End", "Total Return [%]", "Max Drawdown [%]", "Sharpe Ratio"]:
         if k not in stats.index:
             continue
         v = stats[k]
-        shown = f"{v:,.2f}" if isinstance(v, (int, float, np.floating)) else str(v)
+        shown = f"{v:,.2f}" if isinstance(v, int | float | np.floating) else str(v)
         print(f"  {k:<22} {shown}")
 
-    eq = pf.value().dropna()
-    if len(eq) > 1:
-        yrs = (eq.index[-1] - eq.index[0]).days / 365.25
-        print(f"  {'Strategy CAGR [%]':<22} {_cagr(eq.iloc[0], eq.iloc[-1], yrs):,.2f}")
+    eq = pf.value()
+    perf = performance(eq, bench)
+    if perf:
+        print()
+        print("  --- decomposition (this is the result; total return is not) ---")
+        print(f"  {'CAGR [%]':<22} {100 * perf['cagr']:8.2f}")
+        print(f"  {'benchmark CAGR [%]':<22} {100 * perf['benchmark_cagr']:8.2f}")
+        print(f"  {'beta':<22} {perf['beta']:8.2f}")
+        print(f"  {'correlation':<22} {perf['correlation']:8.2f}")
+        print(f"  {'market gave [%]':<22} {100 * perf['market_contribution']:8.2f}")
+        print(f"  {'ALPHA [%]':<22} {100 * perf['alpha']:8.2f}  <- what is left")
+        print()
+        print("  --- annual ---")
+        for yr, row in annual_table(eq, bench).iterrows():
+            flag = "  <-- negative" if row["excess"] < 0 else ""
+            print(
+                f"   {yr}  strat {100 * row['strategy']:7.1f}%"
+                f"   bench {100 * row['benchmark']:7.1f}%"
+                f"   excess {100 * row['excess']:7.1f}%{flag}"
+            )
 
-    b = bench.dropna()
-    if len(b) > 1:
-        yrs = (b.index[-1] - b.index[0]).days / 365.25
-        print(f"  {'VNINDEX Total [%]':<22} {100 * (b.iloc[-1] / b.iloc[0] - 1):,.2f}")
-        print(f"  {'VNINDEX CAGR [%]':<22} {_cagr(b.iloc[0], b.iloc[-1], yrs):,.2f}")
-    print(f"  {'round-trip cost':<22} {100 * costs.round_trip:.2f}%")
+    # Capped positions leave cash idle. Realistic, but it has to be visible: a
+    # book that is only half deployed is not the strategy you think you ran.
+    print()
+    print(f"  {'avg deployed [%]':<22} {100 * weights.sum(axis=1).mean():8.1f}")
+    print(f"  {'round-trip cost [%]':<22} {100 * costs.round_trip:8.2f}")

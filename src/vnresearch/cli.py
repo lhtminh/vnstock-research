@@ -47,6 +47,14 @@ def label() -> None:
 
 
 @app.command()
+def peers() -> None:
+    """Build the correlation-based peer sets the peer_* features read."""
+    from vnresearch.features import peers as peers_mod
+
+    typer.echo(f"\n-> {peers_mod.build()}")
+
+
+@app.command()
 def features() -> None:
     """Compute every registered feature plus its cross-sectional rank."""
     from vnresearch.features import build as fbuild
@@ -78,21 +86,72 @@ def train(model: str = "lightgbm", controls: bool = False) -> None:
     for name, val in run.importance.head(8).items():
         typer.echo(f"    {name:<26} {val:8.1f}")
 
+    # Archived, not just printed. Eight lines of stdout cannot answer "did the
+    # feature I added last week displace anything", which is the only question
+    # that matters after a registry change. Stamped with the run time so two
+    # feature sets can be diffed directly.
+    from datetime import UTC, datetime
+
+    from vnresearch.features.registry import all_features
+
+    reg = all_features()
+    imp = run.importance_by_fold.copy()
+    imp.insert(0, "gain_pct", run.importance)
+    imp.insert(0, "category", [reg[n.removesuffix("_rank")].category for n in imp.index])
+    imp.insert(0, "rank", range(1, len(imp) + 1))
+    imp.index.name = "feature"
+    reports = config.path("reports")
+    reports.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    imp_path = reports / f"importance-{model}-{stamp}.csv"
+    imp.round(4).to_csv(imp_path)
+    typer.echo(f"  -> {imp_path}")
+
     if controls:
         typer.echo("\n  leakage controls:")
         typer.echo(tr.leakage_controls(model).to_string(index=False))
 
 
 @app.command()
-def backtest(model: str = "lightgbm", compare: bool = False) -> None:
+def holdout(model: str = "lightgbm") -> None:
+    """Score once on the frozen holdout. The only number development never saw."""
+    from vnresearch.model import train as tr
+
+    r = tr.evaluate_holdout(model)
+    oos = r.pop("oos")
+    for k, v in r.items():
+        typer.echo(f"  {k:<16} {v:.4f}" if isinstance(v, float) else f"  {k:<16} {v}")
+
+    out = config.path("data") / f"oos_{model}_holdout.parquet"
+    oos.to_parquet(out)
+    typer.echo(f"  -> {out}")
+
+
+@app.command()
+def freeze(model: str = "lightgbm", with_cv: bool = False) -> None:
+    """Fit on the whole sample and save the artifact paper trading loads.
+
+    Trains through the last labelled session, holdout INCLUDED — going live is
+    what the holdout was being kept for. --with-cv also records walk-forward
+    scores in the manifest (~7 min).
+    """
+    from vnresearch.model import freeze as fz
+
+    fz.build(model, with_cv=with_cv)
+
+
+@app.command()
+def backtest(model: str = "lightgbm", compare: bool = False, holdout: bool = False) -> None:
     """Backtest out-of-sample predictions. --compare shows the untradeable-fill delta."""
     import pandas as pd
 
     from vnresearch.backtest import engine
 
-    path = config.path("data") / f"oos_{model}.parquet"
+    suffix = "_holdout" if holdout else ""
+    path = config.path("data") / f"oos_{model}{suffix}.parquet"
     if not path.exists():
-        raise typer.BadParameter(f"{path} missing — run `vnr train --model {model}` first")
+        cmd = "holdout" if holdout else "train"
+        raise typer.BadParameter(f"{path} missing — run `vnr {cmd} --model {model}` first")
     oos = pd.read_parquet(path)
 
     typer.echo("\n=== tradeable fills only ===")
@@ -109,8 +168,12 @@ def backtest(model: str = "lightgbm", compare: bool = False) -> None:
 
 @app.command()
 def pipeline() -> None:
-    """Run mirror -> clean -> panel -> label -> features end to end."""
-    for step in (mirror, clean, panel, label, features):
+    """Run mirror -> clean -> panel -> label -> peers -> features end to end."""
+    # peers runs BEFORE features and inside the pipeline, not out of band. It
+    # used to be neither: build.py substitutes NULL for all four peer_* features
+    # when peers.parquet is missing, so a stale or absent file silently removed
+    # four features from the model instead of failing.
+    for step in (mirror, clean, panel, label, peers, features):
         typer.echo(f"\n=== {step.__name__} ===")
         step()
 

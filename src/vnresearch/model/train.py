@@ -22,16 +22,24 @@ from vnresearch.model.cv import PurgedWalkForward
 
 
 def make_model(name: str, params: dict | None = None):
+    """Build a model with importance measured by GAIN.
+
+    Both libraries default to counting SPLITS, which answers "how often did the
+    tree cut on this?" rather than "how much did it learn from it?". The two
+    disagree badly here: hl_range ranks 18th by split and 1st by gain, ret_1
+    ranks 20th and 2nd. Split counts favour features with many distinct values,
+    not useful ones.
+    """
     cfg = config.load("model")
     p = {**cfg[name], **(params or {})}
     if name == "lightgbm":
         from lightgbm import LGBMRegressor
 
-        return LGBMRegressor(**p)
+        return LGBMRegressor(importance_type="gain", **p)
     if name == "xgboost":
         from xgboost import XGBRegressor
 
-        return XGBRegressor(**p)
+        return XGBRegressor(importance_type="gain", **p)
     raise ValueError(f"unknown model: {name}")
 
 
@@ -54,6 +62,11 @@ class Run:
     folds: list[FoldResult]
     importance: pd.Series
     oos: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # Per-fold gain, normalised within each fold. Kept alongside the average
+    # because the average hides the case that matters most when judging a new
+    # feature: one that carries a whole fold and does nothing in the other three
+    # is noise that happened to fit, and it reads as respectable once averaged.
+    importance_by_fold: pd.DataFrame = field(default_factory=pd.DataFrame)
 
     @property
     def summary(self) -> pd.DataFrame:
@@ -69,6 +82,7 @@ def walk_forward(
     data: ds.Dataset | None = None,
     horizon: int | None = None,
     verbose: bool = True,
+    params: dict | None = None,
 ) -> Run:
     cfg = config.load("model")["cv"]
     horizon = horizon or config.load("features")["label"]["horizon"]
@@ -83,7 +97,7 @@ def walk_forward(
 
     folds, importances, oos = [], [], []
     for i, (tr, te) in enumerate(splitter.split(data.dates)):
-        model = make_model(model_name)
+        model = make_model(model_name, params)
         model.fit(data.X.iloc[tr], data.y.iloc[tr])
         pred = model.predict(data.X.iloc[te])
 
@@ -122,8 +136,56 @@ def walk_forward(
                 f"  hit {f.hit_rate:.0%}"
             )
 
-    imp = pd.concat(importances, axis=1).mean(axis=1).sort_values(ascending=False)
-    return Run(model=model_name, folds=folds, importance=imp, oos=pd.concat(oos, ignore_index=True))
+    # Normalise per fold before averaging: gain is on an arbitrary scale that
+    # grows with training set size, so a raw mean would let the last (largest)
+    # fold decide the ranking on its own.
+    by_fold = pd.concat([s / s.sum() for s in importances], axis=1).mul(100)
+    by_fold.columns = [f"fold_{i}" for i in range(by_fold.shape[1])]
+    imp = by_fold.mean(axis=1).sort_values(ascending=False)
+    return Run(
+        model=model_name,
+        folds=folds,
+        importance=imp,
+        oos=pd.concat(oos, ignore_index=True),
+        importance_by_fold=by_fold.loc[imp.index],
+    )
+
+
+def evaluate_holdout(model_name: str = "lightgbm", horizon: int | None = None) -> dict:
+    """Train once on everything before the holdout, score once on the holdout.
+
+    This is the only number here that was not influenced by development. The
+    walk-forward score was watched while the pipeline was being built, so it is
+    optimistic by an unknown amount. Run this sparingly — every look spends a
+    little of what makes it trustworthy.
+    """
+    horizon = horizon or config.load("features")["label"]["horizon"]
+    dev = ds.load(horizon)
+    hold = ds.load(horizon, holdout_only=True)
+
+    model = make_model(model_name)
+    model.fit(dev.X, dev.y)
+    pred = model.predict(hold.X)
+
+    ic = ds.daily_ic(pred, hold.y.to_numpy(), hold.dates).dropna()
+    return {
+        "train_rows": len(dev),
+        "train_end": str(pd.to_datetime(dev.dates).max().date()),
+        "holdout_rows": len(hold),
+        "holdout_start": str(pd.to_datetime(hold.dates).min().date()),
+        "holdout_end": str(pd.to_datetime(hold.dates).max().date()),
+        "mean_ic": float(ic.mean()),
+        "ir": float(ic.mean() / ic.std()) if ic.std() else float("nan"),
+        "hit_rate": float((ic > 0).mean()),
+        "oos": pd.DataFrame(
+            {
+                "date": hold.dates.to_numpy(),
+                "ticker": hold.tickers.to_numpy(),
+                "pred": pred,
+                "fwd_ret": hold.fwd_ret.to_numpy(),
+            }
+        ),
+    }
 
 
 def leakage_controls(model_name: str = "lightgbm", horizon: int | None = None) -> pd.DataFrame:
