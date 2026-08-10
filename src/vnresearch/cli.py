@@ -77,6 +77,12 @@ def train(model: str = "lightgbm", controls: bool = False) -> None:
 
     run = tr.walk_forward(model)
     typer.echo(f"\n  mean IC across folds  {run.mean_ic:+.4f}")
+    # Printed next to IC because the two answer different questions and can
+    # disagree: IC orders ~280 names, this one scores the 50 that get bought.
+    # The 0.60% is the round trip a rebalance pays, so an edge under it is a
+    # losing book no matter what the IC says.
+    edge = run.mean_top_edge
+    typer.echo(f"  top-50 gross edge     {edge:+.4f}  per holding period  (round trip 0.0060)")
 
     out = config.path("data") / f"oos_{model}.parquet"
     run.oos.to_parquet(out)

@@ -54,6 +54,10 @@ class FoldResult:
     mean_ic: float
     ir: float
     hit_rate: float
+    # Gross edge of the top-N over the day's universe, per holding period. IC
+    # scores an ordering of ~280 names; this scores the 50 that get bought.
+    # They can and do move in opposite directions — see dataset.topn_edge.
+    top_edge: float = float("nan")
 
 
 @dataclass
@@ -75,6 +79,16 @@ class Run:
     @property
     def mean_ic(self) -> float:
         return float(np.nanmean([f.mean_ic for f in self.folds]))
+
+    @property
+    def mean_top_edge(self) -> float:
+        """Gross edge of the traded book, averaged across folds.
+
+        Compare it against the round trip, not against zero: at horizon 5 the
+        book turns over every 5 sessions and pays 0.60% to do it, so an edge
+        below that loses money however good the IC looks.
+        """
+        return float(np.nanmean([f.top_edge for f in self.folds]))
 
 
 def walk_forward(
@@ -102,6 +116,7 @@ def walk_forward(
         pred = model.predict(data.X.iloc[te])
 
         ic = ds.daily_ic(pred, data.y.iloc[te].to_numpy(), data.dates.iloc[te]).dropna()
+        edge = ds.topn_edge(pred, data.fwd_ret.iloc[te].to_numpy(), data.dates.iloc[te]).dropna()
         dates_te = pd.to_datetime(data.dates.iloc[te])
         folds.append(
             FoldResult(
@@ -114,6 +129,7 @@ def walk_forward(
                 mean_ic=float(ic.mean()),
                 ir=float(ic.mean() / ic.std()) if ic.std() else float("nan"),
                 hit_rate=float((ic > 0).mean()),
+                top_edge=float(edge.mean()) if len(edge) else float("nan"),
             )
         )
         importances.append(pd.Series(model.feature_importances_, index=data.X.columns))
@@ -133,7 +149,7 @@ def walk_forward(
             print(
                 f"  fold {i}  test {f.test_start}..{f.test_end}"
                 f"  n={f.n_test:>7,}  IC {f.mean_ic:+.4f}  IR {f.ir:+.2f}"
-                f"  hit {f.hit_rate:.0%}"
+                f"  hit {f.hit_rate:.0%}  top50 {f.top_edge:+.4f}"
             )
 
     # Normalise per fold before averaging: gain is on an arbitrary scale that

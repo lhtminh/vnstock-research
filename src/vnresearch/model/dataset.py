@@ -148,6 +148,56 @@ ORDER BY date, ticker"""
     )
 
 
+def topn_edge(
+    pred: np.ndarray,
+    fwd_ret: np.ndarray,
+    dates: pd.Series,
+    n: int | None = None,
+) -> pd.Series:
+    """Per-session gross edge of the top-n picks over the day's own universe.
+
+    WHY THIS EXISTS ALONGSIDE daily_ic, AND WHY IT IS THE ONE TO WATCH.
+
+    `daily_ic` is Spearman over the WHOLE cross-section — roughly 280 names on a
+    recent day. The book buys 50 of them. So IC scores the ordering of ~230
+    stocks that are never held, and a model can rank the middle of the
+    distribution better while ranking the top worse and still post a higher IC.
+
+    That is not hypothetical here. Measured 2026-08-10, going from 35 features
+    to 59: walk-forward IC rose +0.0730 -> +0.0825 while dev alpha fell -2.93%
+    -> -5.18%. A metric that improves while the money gets worse is measuring
+    something other than the money.
+
+    This measures what is actually earned:
+
+        mean(fwd_ret of the top n)  -  mean(fwd_ret of the whole universe)
+
+    Subtracting the day's own universe mean removes the market move for that
+    window exactly, with no beta estimate to get wrong — the same trick peers.py
+    uses. What is left is the part attributable to picking.
+
+    Read it as return per HOLDING PERIOD, not per day: at horizon 5 a value of
+    0.004 means the top 50 beat the universe by 0.4% over five sessions, against
+    a round trip that costs 0.60%. That comparison is the whole point.
+
+    Overlapping windows make consecutive values autocorrelated, so the standard
+    deviation understates the true uncertainty. Fine for ranking configurations
+    against each other, which is what it is for; do not read a t-stat off it.
+    """
+    if n is None:
+        n = config.load("backtest")["portfolio"]["top_n"]
+    df = pd.DataFrame({"d": pd.to_datetime(dates).to_numpy(), "p": pred, "r": fwd_ret}).dropna()
+
+    def one(g: pd.DataFrame) -> float:
+        # Need a universe meaningfully wider than the book, or "top n" is
+        # "everything" and the edge is 0 by construction.
+        if len(g) < n * 2:
+            return np.nan
+        return float(g.nlargest(n, "p")["r"].mean() - g["r"].mean())
+
+    return df.groupby("d").apply(one, include_groups=False)
+
+
 def daily_ic(pred: np.ndarray, y: np.ndarray, dates: pd.Series) -> pd.Series:
     """Spearman IC per day between predictions and the target rank.
 

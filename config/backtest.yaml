@@ -15,10 +15,38 @@ portfolio:
   #   top 50, exit 200   turnover 20.3%  cost  6.1%/yr  CAGR +12.3%  alpha  -1.03%
   #
   # The last two are the same result. Development ranked them 4 points of alpha
-  # apart and the holdout ranked them the other way by half a point — the
-  # parameter search is fitting noise, not finding structure. 50/200 is kept
-  # for the two reasons that are NOT noise: lower turnover and more names.
-  exit_rank: 200
+  # apart and the holdout ranked them the other way by half a point — that
+  # search was fitting noise, not finding structure.
+  #
+  # 2026-08-10: MOVED 200 -> 100. This is not a re-run of that search.
+  #
+  # The comparison above moved entry AND exit together (30/150 against 50/200)
+  # and judged on holdout alpha — one noisy number at the end of a long path.
+  # What was missing was any measure of what the buffer COSTS. There is one now:
+  # `dataset.topn_edge` scores what the book HOLDS rather than what the model
+  # ranks. Holding entry fixed at 50 and varying only the exit, a wide buffer
+  # turns out not to be free at all:
+  #
+  #   exit   turnover   held edge   cost/rebal      net
+  #     50     44.7%     +0.00328    0.00268    +2.99%/yr
+  #     75     30.1%     +0.00309    0.00180    +6.41%/yr
+  #    100     21.7%     +0.00257    0.00130    +6.32%/yr
+  #    150     12.6%     +0.00188    0.00076    +5.59%/yr
+  #    200      8.9%     +0.00077    0.00054    +1.16%/yr   <- was here
+  #    300      6.6%     +0.00046    0.00040    +0.31%/yr
+  #
+  # At 200 the book gave up 80% of its edge to save 2.7%/yr of cost. The dev
+  # backtest agrees, and by more than the decomposition predicted: alpha
+  # -5.18% -> +1.21%, CAGR 1.60% -> 7.83%, Sharpe 0.22 -> 0.55, with maximum
+  # drawdown unchanged at 66% — so this is not return bought with risk.
+  #
+  # 100 rather than the 75 that scored best: 75 through 150 is a broad plateau
+  # and the peak inside it is not a real distinction. Choosing the edge of a
+  # plateau is how the earlier search went wrong.
+  #
+  # NOT CONFIRMED ON THE HOLDOUT. It is the right arbiter and it is unspent on
+  # this parameter.
+  exit_rank: 100
   init_cash: 1.0e9       # VND
   # Position size cap as a fraction of the name's 20-session ADTV. Above this
   # you are buying liquidity that was not there.
