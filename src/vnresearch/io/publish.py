@@ -126,6 +126,50 @@ SELECT *, PERCENT_RANK() OVER (PARTITION BY date ORDER BY target, ticker) AS y
 FROM base"""
 
 
+def _write_catalog(con) -> int:
+    """One row per feature: which dimension it belongs to, and its definition.
+
+    Without this the published matrix is 127 unlabelled columns. The point of the
+    feature work was to see the market from several dimensions at once, and that
+    structure lives in `Feature.category` — in the registry, which is Python, and
+    therefore invisible to anything querying the database. So it goes in a table
+    beside the numbers.
+
+    The SQL definition travels too. It is what makes a column answerable rather
+    than merely present: `rsi_14` on a 14-session SIMPLE average is a different
+    number from the exponential one a charting package draws, and reading the
+    expression is the only way to know which you have.
+    """
+    _exec(
+        con,
+        f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.feature_catalog (
+                feature     text PRIMARY KEY,
+                dimension   text NOT NULL,
+                rank_column text NOT NULL,
+                lookback    int  NOT NULL,
+                definition  text NOT NULL)""",
+    )
+    _exec(con, f"TRUNCATE {SCHEMA}.feature_catalog")
+    _exec(con, _catalog_insert_sql())
+    return con.execute(f"SELECT count(*) FROM pg.{SCHEMA}.feature_catalog").fetchone()[0]
+
+
+def _catalog_insert_sql() -> str:
+    """Built from the registry, so a feature added tomorrow is catalogued by
+    existing away rather than by anyone remembering to list it."""
+    from vnresearch.features.registry import all_features
+
+    rows = ", ".join(
+        f"({_literal(f.name)}, {_literal(f.category)}, {_literal(f.name + '_rank')}, "
+        f"{f.lookback}, {_literal(f.sql)})"
+        for f in sorted(all_features().values(), key=lambda x: (x.category, x.name))
+    )
+    return (
+        f"INSERT INTO {SCHEMA}.feature_catalog "
+        f"(feature, dimension, rank_column, lookback, definition) VALUES {rows}"
+    )
+
+
 def _record_run(con, rows: dict[str, int]) -> None:
     cfg = config.load("model")["dataset"]
     h = config.load("features")["label"]["horizon"]
@@ -230,17 +274,24 @@ def build(verbose: bool = True) -> dict[str, Any]:
         n_train = con.execute(f"SELECT count(*) FROM pg.{SCHEMA}.training_sample").fetchone()[0]
         n_hold = con.execute(f"SELECT count(*) FROM pg.{SCHEMA}.holdout_sample").fetchone()[0]
 
+        n_cat = _write_catalog(con)
         _record_run(con, {"features": n_feat, "labels": n_lab, "features_cols": len(cols)})
         _comment(con)
 
         if verbose:
+            dims = con.execute(
+                f"SELECT dimension, count(*) FROM pg.{SCHEMA}.feature_catalog GROUP BY 1 ORDER BY 1"
+            ).fetchall()
             print(f"  training_sample     {n_train:>9,} rows   (view, holdout excluded)")
             print(f"  holdout_sample      {n_hold:>9,} rows   (view, frozen — see invariant 10)")
+            print(f"  feature_catalog     {n_cat:>9} features across {len(dims)} dimensions")
+            print("                        " + ", ".join(f"{d} {n}" for d, n in dims))
         return {
             "features": n_feat,
             "labels": n_lab,
             "training_sample": n_train,
             "holdout_sample": n_hold,
+            "feature_catalog": n_cat,
         }
     finally:
         con.close()
@@ -261,6 +312,15 @@ _COMMENTS: tuple[tuple[str, str, str], ...] = (
         (
             "Forward returns with tradeable entry, per horizon. Entry is the NEXT "
             "session's open and must be tradeable; exit is deliberately not required to be."
+        ),
+    ),
+    (
+        "TABLE",
+        "feature_catalog",
+        (
+            "One row per feature: which of the 8 dimensions it belongs to, how much "
+            "history it needs, and the SQL that defines it. Rebuilt from the registry "
+            "on every publish, so it cannot drift from the columns in features."
         ),
     ),
     (

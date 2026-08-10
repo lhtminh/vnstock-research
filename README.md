@@ -67,7 +67,29 @@ touched.
 | `research.labels` | 943k | Forward returns at 1/5/10/21, tradeable entry |
 | `research.training_sample` | 644k | **view** — the matrix the model trains on |
 | `research.holdout_sample` | 212k | **view** — the frozen holdout, kept separate on purpose |
+| `research.feature_catalog` | 59 | Each feature's dimension, lookback and SQL definition |
 | `research.publish_runs` | — | One row per publish, with the mirror snapshot it came from |
+
+The catalog is what makes the matrix readable — otherwise it is 127 unlabelled
+float columns, and which of the 8 dimensions a column belongs to lives only in
+`Feature.category`, which is Python.
+
+```sql
+SELECT dimension, count(*), string_agg(feature, ', ' ORDER BY feature)
+FROM research.feature_catalog GROUP BY 1 ORDER BY 2 DESC;
+```
+
+| dimension | n | dimension | n |
+|---|---|---|---|
+| price (range + volatility) | 13 | technical | 7 |
+| volume (liquidity) | 10 | shape (speculation) | 6 |
+| momentum | 9 | peer | 4 |
+| market (beta) | 8 | season | 2 |
+
+`definition` carries the SQL each feature is computed from, which is what makes
+a column answerable rather than merely present: `rsi_14` here is a 14-session
+**simple** average, not the exponential one a charting package draws, and
+reading the expression is the only way to know which you have.
 
 `training_sample` is generated from `config/model.yaml` and the same target
 expression `dataset.load()` uses, so it is the training matrix rather than

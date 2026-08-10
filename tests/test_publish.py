@@ -166,6 +166,57 @@ def test_features_narrow_to_real_and_prices_do_not(tmp_path):
     con.close()
 
 
+def test_the_catalog_names_every_feature_and_its_dimension():
+    """127 unlabelled float columns is not a feature set anyone can read. The
+    dimension lives in `Feature.category`, which is Python and so invisible from
+    SQL — the catalog is what carries it across."""
+    sql = publish._catalog_insert_sql()
+    feats = all_features()
+    for name, f in feats.items():
+        assert f"'{name}'" in sql
+        assert f"'{name}_rank'" in sql
+        assert f"'{f.category}'" in sql
+    assert sql.count("), (") == len(feats) - 1
+
+
+def test_the_catalog_round_trips_through_a_real_insert():
+    """Definitions are SQL and contain quotes. An unescaped one closes the
+    literal early, and the failure is a syntax error a long way from the cause."""
+    con = duckdb.connect()
+    con.execute("CREATE SCHEMA research")
+    con.execute(
+        """CREATE TABLE research.feature_catalog (
+               feature text PRIMARY KEY, dimension text, rank_column text,
+               lookback int, definition text)"""
+    )
+    con.execute(publish._catalog_insert_sql())
+    got = con.execute("SELECT feature, dimension, definition FROM research.feature_catalog").df()
+
+    feats = all_features()
+    assert len(got) == len(feats)
+    assert set(got["dimension"]) == {f.category for f in feats.values()}
+    for _, row in got.iterrows():
+        assert row["definition"] == feats[row["feature"]].sql
+    con.close()
+
+
+def test_every_catalogued_feature_reaches_the_training_matrix(sql_train):
+    """The catalog describing a column the model never sees would be worse than
+    no catalog — it would describe a feature set that does not exist."""
+    con = duckdb.connect()
+    con.execute("CREATE SCHEMA research")
+    con.execute(
+        """CREATE TABLE research.feature_catalog (
+               feature text PRIMARY KEY, dimension text, rank_column text,
+               lookback int, definition text)"""
+    )
+    con.execute(publish._catalog_insert_sql())
+    ranks = con.execute("SELECT rank_column FROM research.feature_catalog").df()["rank_column"]
+    for col in ranks:
+        assert col in sql_train
+    con.close()
+
+
 def test_comment_text_with_an_apostrophe_stays_valid_sql():
     """The comments describe entry as the next session's open. Passing that
     through unescaped closes the string literal early and the DDL fails."""
