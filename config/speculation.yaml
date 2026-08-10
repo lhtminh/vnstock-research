@@ -54,33 +54,41 @@ turnover:
   fast: 21
   slow: 252
 
-volatility:
-  # The document's formula is the SIGNED daily change, (P_t - P_t-1)/P_t-1,
-  # averaged over 5 sessions. Its own theory section says volatility rises both
-  # when a stock is pushed up AND when it is dumped — but a signed mean cannot
-  # see the second. A falling stock sits at the BOTTOM of the distribution, and
-  # the buckets only flag the top.
-  #
-  # MEASURED on the full panel: the two forms disagree on 35.4% of daily labels.
-  # Of the 14,561 rows where a stock fell more than 5% a day averaged over five
-  # sessions, the signed formula calls ALL 14,561 of them Bình thường.
-  #
-  # "signed" is the formula as written. "abs" is what the theory describes.
-  measure: signed   # signed | abs
-
-range:
-  # The document's Range is P_high - P_low in absolute VND, unnormalised. Across
-  # a cross-section that mostly ranks price LEVEL: a 100,000 VND stock has a
-  # wider absolute range than a 5,000 VND one on the same percentage move.
-  #
-  # MEASURED: median share price rises monotonically with the absolute label —
-  # 6,910 / 15,000 / 21,740 / 34,780 VND across the four buckets. It is largely
-  # a price ranking. Dividing by the previous close inverts it (9,360 / 7,650 /
-  # 6,950 / 6,500), which is the direction penny-stock speculation actually
-  # runs. The two disagree on 33.0% of daily labels.
-  #
-  # "absolute" is the formula as written.
-  measure: absolute   # absolute | pct
+# BOTH label sets are built, every time, side by side. Following the document
+# and improving on it are not a choice you have to make once — the columns sit
+# next to each other so the difference is a query rather than an argument.
+#
+#   mentor    the document exactly as written    -> spec_label
+#   adjusted  three changes, listed below        -> spec_label_adj
+#
+# Everything else is the mentor's in both: the four dimensions, the 40/30/15/15
+# weights, the 0-3 scoring, the 0.75/1.5/2.25 thresholds, the percentile idea,
+# and the 12-month "tỷ lệ đầu cơ".
+variants:
+  mentor:
+    volatility: signed
+    range: absolute
+    pvdi_scoring: fixed
+  adjusted:
+    # 1. VOLATILITY, signed -> magnitude. The document's formula averages the
+    #    SIGNED daily change, so a falling stock lands at the BOTTOM of the
+    #    distribution while the buckets only flag the top. Its own theory
+    #    paragraph says volatility rises on panic selling too, so the prose and
+    #    the formula disagree. MEASURED: of 14,561 rows where a stock fell more
+    #    than 5% a day over five sessions, the signed form calls ALL of them
+    #    Bình thường. 35.4% of daily labels change.
+    volatility: abs
+    # 2. RANGE, VND -> share of price. P_high - P_low unnormalised mostly ranks
+    #    price level. MEASURED: median price across the four buckets runs
+    #    6,910 / 15,000 / 21,740 / 34,780. Dividing by the previous close
+    #    inverts it (9,360 / 7,650 / 6,950 / 6,500), the direction penny-stock
+    #    speculation actually runs. 33.0% of daily labels change.
+    range: pct
+    # 3. PVDI, fixed thresholds -> percentiles, so all four components are on
+    #    one scale. With 0.40 of the weight on absolute cut-offs that it clears
+    #    0.03% of the time, while the other three fill their top bucket by
+    #    construction, only 58 rows in 2.5M ever reached Đầu cơ mạnh.
+    pvdi_scoring: percentile
 
 # Bình thường 0, Đầu cơ nhẹ 1, Đầu cơ 2, Đầu cơ mạnh 3.
 quantiles: [0.75, 0.90, 0.95]

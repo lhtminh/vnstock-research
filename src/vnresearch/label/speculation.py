@@ -91,7 +91,7 @@ _COMPONENTS = (
 _SCORE_DP = 6
 
 
-def weighted_score(weights: dict[str, float]) -> str:
+def weighted_score(weights: dict[str, float], suffix: str = "") -> str:
     """Score = 0.40·PVDI + 0.30·Turnover + 0.15·Volatility + 0.15·Range.
 
     BOTH the cast and the rounding are load-bearing, and each fixes what the
@@ -111,7 +111,10 @@ def weighted_score(weights: dict[str, float]) -> str:
     components is not this score, and scoring a missing component as zero would
     read as "normal on that dimension".
     """
-    terms = " + ".join(f"{weights[k]}::DOUBLE * {_points(f'{c}_label')}" for k, c in _COMPONENTS)
+    terms = " + ".join(
+        f"{weights[k]}::DOUBLE * {_points(f'{c}_label{"" if c == "turnover" else suffix}')}"
+        for k, c in _COMPONENTS
+    )
     return f"ROUND({terms}, {_SCORE_DP})"
 
 
@@ -242,128 +245,180 @@ SELECT ticker, date, sess, tsess, rho_long, rho_short, sigma,
 FROM s"""
 
 
-def build(verbose: bool = True) -> Path:
-    """Write data/clean/speculation.parquet."""
-    cfg = _cfg()
-    win = cfg["windows"]
+# The two readings of the volatility and range formulas, computed side by side.
+# Which one a variant uses is config; both always exist in the file.
+_VOL = {"signed": "100 * ret", "abs": "100 * ABS(ret)"}
+_RANGE = {"absolute": "high - low", "pct": "(high - low) / NULLIF(prev_close, 0)"}
+
+# Column suffix per variant. The mentor's carries no suffix, so every name the
+# document uses means what the document means by it.
+_SUFFIX = {"mentor": "", "adjusted": "_adj"}
+
+
+def _measure_sql(cfg: dict) -> str:
+    """Every per-ticker measure both variants need, in one pass.
+
+    All four of vol/range are computed whichever variant is selected — they are
+    cheap window averages over the same panel, and having both in the file is
+    what turns "the formula is wrong" into a query someone can run.
+    """
+    win, t = cfg["windows"], cfg["turnover"]
+    w = "PARTITION BY ticker ORDER BY date ROWS BETWEEN"
+    smooth = f"{w} {win['smooth'] - 1} PRECEDING AND CURRENT ROW"
+    # Each measure NULLed until its own lookback is met — see _base_sql on why
+    # the frame alone does not do this.
+    cols = [
+        f"CASE WHEN tsess >= {win['smooth']} THEN AVG({expr}) OVER ({smooth}) END AS {name}"
+        for name, expr in (
+            ("vol_signed", _VOL["signed"]),
+            ("vol_abs", _VOL["abs"]),
+            ("range_absolute", _RANGE["absolute"]),
+            ("range_pct", _RANGE["pct"]),
+        )
+    ]
+    cols.append(
+        f"""CASE WHEN tsess >= {t["slow"]} THEN
+              AVG(volume) OVER ({w} {t["fast"] - 1} PRECEDING AND CURRENT ROW)
+              / NULLIF(AVG(volume) OVER ({w} {t["slow"] - 1} PRECEDING AND CURRENT ROW), 0)
+            END AS turnover_ratio"""
+    )
+    # The windows are computed in their own CTE, where only `base` is in scope.
+    # Written as one join instead, `PARTITION BY ticker` is ambiguous — the pvdi
+    # table carries ticker, date, sess and tsess as well.
+    return f"""
+CREATE OR REPLACE TABLE m AS
+WITH mm AS (SELECT *, {", ".join(cols)} FROM base)
+SELECT mm.*, p.pvdi
+FROM mm JOIN (SELECT ticker, date, pvdi FROM pvdi) p
+     ON p.ticker = mm.ticker AND p.date = mm.date"""
+
+
+def _variant_columns(cfg: dict) -> tuple[list[str], list[str], set[str]]:
+    """(daily label expressions, composite expressions, measures needing quantiles).
+
+    Reading this is the whole design: one loop over the two variants, and the
+    only thing that differs between them is which measure column each component
+    reads and whether PVDI is scored on percentiles or the document's fixed
+    thresholds.
+    """
     labels = cfg["labels"]
+    need = {"turnover_ratio"}
+    label_cols, score_cols = [], []
+
+    for variant, suffix in _SUFFIX.items():
+        v = cfg["variants"][variant]
+        vol_col, rng_col = f"vol_{v['volatility']}", f"range_{v['range']}"
+        need |= {vol_col, rng_col}
+
+        pairs = [("vol", vol_col), ("range", rng_col)]
+        if suffix == "":
+            # Turnover is identical in both, so it is labelled once, unsuffixed.
+            pairs.append(("turnover", "turnover_ratio"))
+        for name, col in pairs:
+            q = f"q_{col}"
+            label_cols.append(
+                f"{_bucket(f'm.{col}', [f'{q}.q_lo', f'{q}.q_mid', f'{q}.q_hi'], labels)}"
+                f" AS {name}_label{suffix}"
+            )
+
+        if v["pvdi_scoring"] == "percentile":
+            need.add("pvdi")
+            thresholds = ["q_pvdi.q_lo", "q_pvdi.q_mid", "q_pvdi.q_hi"]
+        else:
+            thresholds = cfg["pvdi"]["thresholds"]
+        label_cols.append(f"{_bucket('m.pvdi', thresholds, labels)} AS pvdi_label{suffix}")
+
+        score = weighted_score(cfg["composite"]["weights"], suffix)
+        score_cols.append(f"({score}) AS spec_score{suffix}")
+        score_cols.append(
+            f"{_bucket(f'({score})', cfg['composite']['thresholds'], labels)} AS spec_label{suffix}"
+        )
+    return label_cols, score_cols, need
+
+
+def build(verbose: bool = True) -> Path:
+    """Write data/clean/speculation.parquet, with BOTH label sets."""
+    cfg = _cfg()
+    win, labels = cfg["windows"], cfg["labels"]
     panel = config.path("data/clean/panel.parquet")
     if not panel.exists():
         raise FileNotFoundError(f"{panel} missing — run `vnr panel` first")
+    if cfg["turnover"]["denominator"] == "free_float":
+        raise ValueError(
+            "turnover.denominator: free_float — there is no free-float history in this "
+            "database (51 tickers on one date). See config/speculation.yaml."
+        )
 
     con = duckdb.connect()
     try:
         con.execute(_base_sql(cfg))
         con.execute(_pvdi_sql(cfg))
-
-        # The three percentile-scored components. Each is a per-ticker measure
-        # first, then scored against the pooled market-year distribution.
-        vol_expr = "100 * ret" if cfg["volatility"]["measure"] == "signed" else "100 * ABS(ret)"
-        rng_expr = (
-            "high - low"
-            if cfg["range"]["measure"] == "absolute"
-            else "(high - low) / NULLIF(prev_close, 0)"
-        )
-        t = cfg["turnover"]
-        if t["denominator"] == "free_float":
-            raise ValueError(
-                "turnover.denominator: free_float — there is no free-float history in "
-                "this database (51 tickers on one date). See config/speculation.yaml."
+        # The document's PVDI_composite. Weight 0 on weekly by default, because
+        # its "optimised" blend has no objective to optimise against.
+        pv = cfg["pvdi"]
+        if pv["w_weekly"]:
+            con.execute(
+                f"""CREATE OR REPLACE TABLE pvdi AS SELECT * EXCLUDE (pvdi_daily),
+                    {pv["w_daily"]}::DOUBLE * pvdi_daily
+                      + {pv["w_weekly"]}::DOUBLE * pvdi_weekly AS pvdi FROM pvdi"""
             )
-        w = "PARTITION BY ticker ORDER BY date ROWS BETWEEN"
-        # Each measure NULLed until its own lookback is met — see _base_sql on
-        # why the frame alone does not do this.
-        con.execute(
-            f"""CREATE OR REPLACE TABLE m AS
-                SELECT ticker, date, sess, tsess,
-                       CASE WHEN tsess >= {win["smooth"]} THEN
-                         AVG({vol_expr}) OVER ({w} {win["smooth"] - 1} PRECEDING AND CURRENT ROW)
-                       END AS vol_5d,
-                       CASE WHEN tsess >= {win["smooth"]} THEN
-                         AVG({rng_expr}) OVER ({w} {win["smooth"] - 1} PRECEDING AND CURRENT ROW)
-                       END AS range_5d,
-                       CASE WHEN tsess >= {t["slow"]} THEN
-                         AVG(volume) OVER ({w} {t["fast"] - 1} PRECEDING AND CURRENT ROW)
-                         / NULLIF(AVG(volume)
-                             OVER ({w} {t["slow"] - 1} PRECEDING AND CURRENT ROW), 0)
-                       END AS turnover_ratio
-                FROM base"""
-        )
+        else:
+            con.execute("CREATE OR REPLACE TABLE pvdi AS SELECT *, pvdi_daily AS pvdi FROM pvdi")
 
-        for col in ("vol_5d", "range_5d", "turnover_ratio"):
+        con.execute(_measure_sql(cfg))
+        label_cols, score_cols, need = _variant_columns(cfg)
+
+        for col in sorted(need):
             if verbose:
-                print(f"  pooled percentiles for {col} ...")
+                print(f"  pooled percentiles for {col} ...", flush=True)
             _pooled_quantiles(con, "m", col, win["percentile"], f"q_{col}")
 
-        # Daily labels: each measure against that date's pooled thresholds.
-        joins, cols = [], []
-        for col, name in (
-            ("vol_5d", "vol"),
-            ("range_5d", "range"),
-            ("turnover_ratio", "turnover"),
-        ):
-            joins.append(f"LEFT JOIN q_{col} q{name} ON q{name}.date = m.date")
-            cols.append(
-                f"{_bucket(f'm.{col}', [f'q{name}.q_lo', f'q{name}.q_mid', f'q{name}.q_hi'], labels)}"
-                f" AS {name}_label"
-            )
+        joins = " ".join(f"LEFT JOIN q_{c} ON q_{c}.date = m.date" for c in sorted(need))
         con.execute(
             f"""CREATE OR REPLACE TABLE daily AS
-                SELECT m.ticker, m.date, m.sess, m.tsess,
-                       m.vol_5d, m.range_5d, m.turnover_ratio,
-                       {", ".join(cols)}
-                FROM m {" ".join(joins)}"""
+                SELECT m.*, {", ".join(label_cols)} FROM m {joins}"""
         )
 
-        # "Tỷ lệ đầu cơ": share of the trailing year a name spent labelled Đầu cơ
-        # or Đầu cơ mạnh, then ranked cross-sectionally. The document defines
-        # this for volatility and range only.
+        # "Tỷ lệ đầu cơ": the share of the trailing year a name spent labelled
+        # Đầu cơ or Đầu cơ mạnh, then ranked across the market. The document
+        # defines it for volatility and range; computed for both variants.
+        w = "PARTITION BY ticker ORDER BY date ROWS BETWEEN"
+        ratio_cols = [
+            f"""CASE WHEN tsess >= {win["ratio"]} THEN
+                  AVG(CASE WHEN {c}_label{s} IN ('{labels[2]}', '{labels[3]}') THEN 1.0
+                           WHEN {c}_label{s} IS NULL THEN NULL ELSE 0.0 END)
+                    OVER ({w} {win["ratio"] - 1} PRECEDING AND CURRENT ROW)
+                END AS {c}_ratio{s}"""
+            for s in _SUFFIX.values()
+            for c in ("vol", "range")
+        ]
         con.execute(
             f"""CREATE OR REPLACE TABLE ratios AS
-                SELECT ticker, date, sess, tsess,
-                       CASE WHEN tsess >= {win["ratio"]} THEN
-                         AVG(CASE WHEN vol_label IN ('{labels[2]}', '{labels[3]}') THEN 1.0
-                                  WHEN vol_label IS NULL THEN NULL ELSE 0.0 END)
-                           OVER ({w} {win["ratio"] - 1} PRECEDING AND CURRENT ROW)
-                       END AS vol_ratio,
-                       CASE WHEN tsess >= {win["ratio"]} THEN
-                         AVG(CASE WHEN range_label IN ('{labels[2]}', '{labels[3]}') THEN 1.0
-                                  WHEN range_label IS NULL THEN NULL ELSE 0.0 END)
-                           OVER ({w} {win["ratio"] - 1} PRECEDING AND CURRENT ROW)
-                       END AS range_ratio
-                FROM daily"""
+                SELECT ticker, date, sess, tsess, {", ".join(ratio_cols)} FROM daily"""
         )
-        for col in ("vol_ratio", "range_ratio"):
+        ratio_names = [f"{c}_ratio{s}" for s in _SUFFIX.values() for c in ("vol", "range")]
+        for col in ratio_names:
+            if verbose:
+                print(f"  pooled percentiles for {col} ...", flush=True)
             _pooled_quantiles(con, "ratios", col, win["percentile"], f"q_{col}")
 
-        cw = cfg["composite"]["weights"]
-        pv = cfg["pvdi"]
-        pvdi_expr = (
-            f"({pv['w_daily']} * pvdi_daily + {pv['w_weekly']} * COALESCE(pvdi_weekly, 0))"
-            if pv["w_weekly"]
-            else "pvdi_daily"
-        )
-        score = weighted_score(cw)
+        twelve = [
+            f"{_bucket(f'r.{n}', [f'q_{n}.q_lo', f'q_{n}.q_mid', f'q_{n}.q_hi'], labels)}"
+            f" AS {n.replace('_ratio', '_label_12m')}"
+            for n in ratio_names
+        ]
+        rjoins = " ".join(f"LEFT JOIN q_{n} ON q_{n}.date = d.date" for n in ratio_names)
+
         out = config.path("data/clean/speculation.parquet")
         con.execute(
             f"""COPY (
-    SELECT d.ticker, d.date,
-           p.rho_long, p.rho_short, p.sigma,
-           {pvdi_expr} AS pvdi,
-           d.turnover_ratio, d.vol_5d, d.range_5d,
-           {_bucket(pvdi_expr, pv["thresholds"], labels)} AS pvdi_label,
-           d.turnover_label, d.vol_label, d.range_label,
-           r.vol_ratio, r.range_ratio,
-           {_bucket("r.vol_ratio", ["qv.q_lo", "qv.q_mid", "qv.q_hi"], labels)} AS vol_label_12m,
-           {_bucket("r.range_ratio", ["qr.q_lo", "qr.q_mid", "qr.q_hi"], labels)}
-               AS range_label_12m,
-           ({score}) AS spec_score,
-           {_bucket(f"({score})", cfg["composite"]["thresholds"], labels)} AS spec_label
+    SELECT d.* EXCLUDE (sess, tsess),
+           {", ".join(f"r.{n}" for n in ratio_names)},
+           {", ".join(twelve)},
+           {", ".join(score_cols)}
     FROM daily d
-    JOIN pvdi p   ON p.ticker = d.ticker AND p.date = d.date
     LEFT JOIN ratios r ON r.ticker = d.ticker AND r.date = d.date
-    LEFT JOIN q_vol_ratio   qv ON qv.date = d.date
-    LEFT JOIN q_range_ratio qr ON qr.date = d.date
+    {rjoins}
     ORDER BY d.ticker, d.date
 ) TO '{out.as_posix()}' (FORMAT parquet, COMPRESSION zstd)"""
         )
@@ -378,12 +433,22 @@ def _summary(con, path: str) -> None:
     n, first, last = con.execute(
         f"SELECT count(*), min(date), max(date) FROM read_parquet('{path}')"
     ).fetchone()
-    print(f"\n  {n:,} rows  {first} .. {last}")
-    rows = con.execute(
-        f"""SELECT spec_label, count(*) n, round(100.0 * count(*) / sum(count(*)) OVER (), 2) pct
-            FROM read_parquet('{path}') WHERE spec_label IS NOT NULL
-            GROUP BY 1 ORDER BY min(spec_score)"""
-    ).fetchall()
-    print("\n  composite label")
-    for label, cnt, pct in rows:
-        print(f"    {label:<14} {cnt:>9,}  {pct:>5.2f}%")
+    print(f"\n  {n:,} rows  {first} .. {last}\n")
+    print(f"  {'':<14} {'MENTOR':>22}   {'ADJUSTED':>22}")
+    for label in _cfg()["labels"]:
+        a, b = con.execute(
+            f"""SELECT count(*) FILTER (WHERE spec_label = '{label}'),
+                       count(*) FILTER (WHERE spec_label_adj = '{label}')
+                FROM read_parquet('{path}')"""
+        ).fetchone()
+        ta, tb = con.execute(
+            f"SELECT count(spec_score), count(spec_score_adj) FROM read_parquet('{path}')"
+        ).fetchone()
+        print(f"  {label:<14} {a:>12,} {100 * a / ta:>6.2f}%   {b:>12,} {100 * b / tb:>6.2f}%")
+
+    moved = con.execute(
+        f"""SELECT count(*) FROM read_parquet('{path}')
+            WHERE spec_label IS NOT NULL AND spec_label_adj IS NOT NULL
+              AND spec_label <> spec_label_adj"""
+    ).fetchone()[0]
+    print(f"\n  the two disagree on {moved:,} rows")

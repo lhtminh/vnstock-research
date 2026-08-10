@@ -68,7 +68,7 @@ touched.
 | `research.labels` | 943k | Forward returns at 1/5/10/21, tradeable entry |
 | `research.training_sample` | 644k | **view** — the matrix the model trains on |
 | `research.holdout_sample` | 212k | **view** — the frozen holdout, kept separate on purpose |
-| `research.speculation` | 2.9M | Speculation labels — PVDI, turnover, volatility, range, composite |
+| `research.speculation` | 2.9M | Speculation labels, **both** the mentor's scheme and an adjusted one |
 | `research.feature_catalog` | 59 | Each feature's dimension, lookback and SQL definition |
 | `research.publish_runs` | — | One row per publish, with the mirror snapshot it came from |
 
@@ -92,6 +92,29 @@ FROM research.feature_catalog GROUP BY 1 ORDER BY 2 DESC;
 a column answerable rather than merely present: `rsi_14` here is a 14-session
 **simple** average, not the exponential one a charting package draws, and
 reading the expression is the only way to know which you have.
+
+## Speculation labels
+
+`vnr speculation` implements the mentor's four-component scheme. Both label sets
+are built every run, side by side:
+
+| columns | what |
+|---|---|
+| `spec_score`, `spec_label` | the document exactly as written |
+| `spec_score_adj`, `spec_label_adj` | three measured corrections, below |
+| `pvdi_label`, `turnover_label`, `vol_label`, `range_label` | components, mentor's |
+| `*_label_adj` | components, adjusted (turnover is shared — it has only one form here) |
+| `vol_label_12m`, `range_label_12m` (+ `_adj`) | the document's 12-month "nhãn tổng thể" |
+
+The adjusted variant keeps the mentor's four dimensions, 40/30/15/15 weights,
+0-3 scoring and 0.75/1.5/2.25 thresholds, and changes only what was measured to
+be broken: volatility to magnitude (the signed mean cannot see a crash), range
+to a share of price (in đồng it mostly ranks price level), and PVDI to
+percentiles so all four components share one scale. See
+`reports/speculation-labelling-20260810.md` and `config/speculation.yaml`.
+
+**Not a training target** — every input is trailing, so it describes the present
+rather than predicting the future. `label/forward.py` remains the model's label.
 
 `training_sample` is generated from `config/model.yaml` and the same target
 expression `dataset.load()` uses, so it is the training matrix rather than

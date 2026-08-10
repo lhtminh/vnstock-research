@@ -188,6 +188,35 @@ def _panel(tmp_path, n_days=300, n_tickers=4, seed=3):
     return path
 
 
+def test_both_variants_are_built_and_only_three_things_differ():
+    """Following the document and improving on it are not a one-time choice —
+    both label sets are in the file, so the difference is a query. What must NOT
+    differ is everything else: same four dimensions, same weights, same 0-3
+    scoring, same composite thresholds."""
+    cfg = config.load("speculation")
+    m, a = cfg["variants"]["mentor"], cfg["variants"]["adjusted"]
+
+    assert set(m) == set(a) == {"volatility", "range", "pvdi_scoring"}
+    assert m == {"volatility": "signed", "range": "absolute", "pvdi_scoring": "fixed"}
+    assert a == {"volatility": "abs", "range": "pct", "pvdi_scoring": "percentile"}
+
+    # The mentor's variant carries no suffix, so every column the document names
+    # means what the document means by it.
+    assert sp._SUFFIX["mentor"] == ""
+    assert sp._SUFFIX["adjusted"] == "_adj"
+
+
+def test_turnover_is_scored_once_because_both_variants_share_it():
+    """The free-float substitution is forced on both, so a second copy under a
+    different name would imply a difference that does not exist."""
+    labels, _scores, _need = sp._variant_columns(config.load("speculation"))
+    assert sum("AS turnover_label" in c for c in labels) == 1
+    assert not any("turnover_label_adj" in c for c in labels)
+    assert "turnover_label" in sp.weighted_score(
+        config.load("speculation")["composite"]["weights"], "_adj"
+    )
+
+
 def test_a_measure_is_absent_until_its_history_exists(tmp_path, monkeypatch):
     """ROWS BETWEEN 251 PRECEDING does NOT require 252 rows — it computes over
     whatever is there, so a stock's third session would get a '12-month'

@@ -1,4 +1,37 @@
-# Speculation labelling — built, and three things to take back to the mentor
+# Speculation labelling — both label sets, and three things to take back to the mentor
+
+> **Update, same day.** Both variants are now built on every run and sit side by
+> side in the same table: `spec_label` is the document exactly as written,
+> `spec_label_adj` applies the three corrections measured below. Nothing else
+> differs — same four dimensions, same 40/30/15/15 weights, same 0-3 scoring,
+> same 0.75/1.5/2.25 thresholds — and `test_speculation.py` enforces that the
+> gap stays exactly three settings wide.
+>
+> | | Bình thường | Đầu cơ nhẹ | Đầu cơ | Đầu cơ mạnh |
+> |---|---|---|---|---|
+> | **mentor** | 83.87% | 15.44% | 0.69% | **0.002%** (58 rows) |
+> | **adjusted** | 77.73% | 19.58% | 2.62% | **0.07%** (1,721 rows) |
+>
+> They disagree on **381,397 rows**, 15.0% of the 2,544,847 that carry a score.
+> The top bucket goes from unreachable to rare-but-real, which is what it was
+> presumably meant to be. Component distributions after the change:
+>
+> | component | Bình thường | nhẹ | Đầu cơ | mạnh |
+> |---|---|---|---|---|
+> | PVDI (mentor, fixed cut-offs) | 80.02% | 16.55% | 3.41% | **0.03%** |
+> | PVDI (adjusted, percentiles) | 74.81% | 15.06% | 5.07% | **5.05%** |
+> | Turnover — shared, one form only | 75.04% | 14.55% | 5.05% | 5.37% |
+> | Volatility (signed → magnitude) | 75.41% | 14.79% | 4.90% | 4.91% |
+> | | 75.36% | 14.70% | 4.92% | 5.01% |
+> | Range (VND → share of price) | 73.71% | 15.40% | 5.29% | 5.60% |
+> | | 75.01% | 14.84% | 4.95% | 5.19% |
+>
+> Note what this shows about volatility and range: the *distributions* barely
+> move, because percentile scoring fills the buckets by construction either way.
+> It is **which stocks** land in them that changes — 35.4% and 33.0% of daily
+> labels respectively. A distribution table cannot show a broken measure; only
+> the disagreement counts and the crash test below can.
+
 
 Source: `Phương Pháp Nhận Diện Dấu Hiệu Đầu Cơ Cổ Phiếu`
 Built 2026-08-10 from `data/clean/panel.parquet`, mirror `2026-08-10T08:59:25Z`.
@@ -107,15 +140,25 @@ Two coherent fixes, both the mentor's call:
 ## Reading it
 
 ```sql
-SELECT date, ticker, pvdi, spec_score, spec_label
+SELECT ticker, spec_score, spec_label, spec_score_adj, spec_label_adj
 FROM research.speculation
-WHERE date = '2026-08-10' AND spec_label <> 'binh_thuong'
-ORDER BY spec_score DESC;
+WHERE date = '2026-08-10' AND spec_label_adj <> 'binh_thuong'
+ORDER BY spec_score_adj DESC;
 ```
 
-Component labels are `pvdi_label`, `turnover_label`, `vol_label`, `range_label`;
-the document's 12-month "nhãn tổng thể" for volatility and range are
-`vol_label_12m` and `range_label_12m`.
+Where the two schemes disagree, which is the argument worth having:
+
+```sql
+SELECT spec_label, spec_label_adj, count(*)
+FROM research.speculation
+WHERE spec_label IS NOT NULL AND spec_label <> spec_label_adj
+GROUP BY 1, 2 ORDER BY 3 DESC;
+```
+
+Component labels are `pvdi_label`, `turnover_label`, `vol_label`, `range_label`,
+each with an `_adj` twin except turnover, which has only one form here. The
+document's 12-month "nhãn tổng thể" are `vol_label_12m` and `range_label_12m`,
+also with `_adj` twins.
 
 ## What this is not
 
