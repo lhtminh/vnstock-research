@@ -156,7 +156,7 @@ def _write_catalog(con) -> int:
 
 def _catalog_insert_sql() -> str:
     """Built from the registry, so a feature added tomorrow is catalogued by
-    existing away rather than by anyone remembering to list it."""
+    existing rather than by anyone remembering to list it here."""
     from vnresearch.features.registry import all_features
 
     rows = ", ".join(
