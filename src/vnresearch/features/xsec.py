@@ -13,6 +13,27 @@ would shift every rank by however many unbuyable stocks happened to sit below.
 from __future__ import annotations
 
 
+def finite(col: str) -> str:
+    """NaN and infinity to NULL, applied to a raw feature before it is ranked.
+
+    THIS IS THE NULL-RANK DEFECT WEARING A DIFFERENT HAT. `rank_expr` below
+    guards `IS NOT NULL`, and NaN is not NULL — it is a value, it sorts last,
+    and so every row carrying one was handed a rank of exactly 1.0. Measured on
+    the published table before this existed: 177 rows of `skew_21` and 128 of
+    `mkt_corr_60`, every one of them rated the most extreme name in the market
+    that day on the strength of an undefined calculation.
+
+    Where they come from: SKEWNESS and CORR return NaN, not NULL, when a window
+    has no variance — a stock that did not move for 21 sessions, or one whose
+    volume never changed. `label/speculation.py` hit the same thing from the
+    other end, where the NaN overflowed a STDDEV instead of quietly winning.
+
+    Applied to the materialised raw column rather than to the expression, so the
+    window function underneath is computed once.
+    """
+    return f"CASE WHEN isnan({col}) OR isinf({col}) THEN NULL ELSE {col} END"
+
+
 def rank_expr(col: str) -> str:
     """Percentile rank of col within the day's universe, 0..1. NULL stays NULL.
 

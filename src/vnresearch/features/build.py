@@ -80,6 +80,12 @@ FROM p
 
 
 def _xsec_sql(raw_path: str, names: list[str]) -> str:
+    # NaN and infinity are cleared BEFORE ranking, in their own projection, for
+    # two reasons: rank_expr guards IS NOT NULL and NaN is not NULL, so an
+    # undefined value was being handed a rank of exactly 1.0; and doing it here
+    # rather than inside the raw expression means the window function is
+    # computed once. See xsec.finite.
+    clean = ", ".join(f"{xsec.finite(n)} AS {n}" for n in names)
     ranks = [f"{xsec.rank_expr(n)} AS {n}_rank" for n in names]
     # Only universe rows survive. Everything downstream trains, ranks and
     # trades inside the universe, and the panel still holds prices for any
@@ -89,7 +95,7 @@ def _xsec_sql(raw_path: str, names: list[str]) -> str:
 SELECT * EXCLUDE (session_idx)
 FROM (
     SELECT *, {", ".join(ranks)}
-    FROM read_parquet('{raw_path}')
+    FROM (SELECT * REPLACE ({clean}) FROM read_parquet('{raw_path}'))
 )
 WHERE in_universe
 """

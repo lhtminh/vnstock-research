@@ -112,3 +112,56 @@ def test_each_date_ranks_independently():
         real = g[g["x"].notna()]["x_rank"]
         assert real.min() == pytest.approx(0.0)
         assert real.max() == pytest.approx(1.0)
+
+
+def test_nan_is_cleared_before_ranking():
+    """The NULL-rank defect wearing a different hat.
+
+    rank_expr guards `IS NOT NULL`, and NaN is not NULL — it is a value, it
+    sorts last, and so it takes the top rank. Found in the PUBLISHED table: 177
+    rows of skew_21 and 128 of mkt_corr_60, every one of them rated the most
+    extreme name in the market that day on an undefined calculation.
+    """
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE t AS SELECT * FROM (VALUES "
+        "(1.0), (2.0), (3.0), ('NaN'::DOUBLE), ('Infinity'::DOUBLE)) v(x)"
+    )
+    got = con.execute(f"SELECT {xsec.finite('x')} AS x FROM t").df()
+    assert got["x"].notna().sum() == 3
+    assert list(got["x"].dropna()) == [1.0, 2.0, 3.0]
+    con.close()
+
+
+def test_a_nan_would_otherwise_win_the_ranking():
+    """The counterfactual, so the guard above cannot be removed as redundant.
+
+    Built in SQL rather than through a pandas fixture on purpose: pandas uses
+    NaN as its own NULL sentinel for float64, so a NaN handed to DuckDB through
+    a DataFrame arrives as NULL and the bug cannot be reproduced. The real
+    pipeline creates NaN INSIDE DuckDB — SKEWNESS and CORR return it on a
+    window with no variance — and parquet preserves it as distinct from NULL,
+    which is exactly why it reached the published table.
+    """
+    con = duckdb.connect()
+    con.execute(
+        """CREATE TABLE t AS SELECT * FROM (VALUES
+             ('AAA', DATE '2026-08-04', true, 1.0),
+             ('BBB', DATE '2026-08-04', true, 2.0),
+             ('CCC', DATE '2026-08-04', true, 'NaN'::DOUBLE)
+           ) v(ticker, date, in_universe, x)"""
+    )
+    unguarded = con.execute(
+        f"SELECT ticker, {xsec.rank_expr('x')} AS x_rank FROM t ORDER BY ticker"
+    ).df()
+    assert unguarded.set_index("ticker").loc["CCC", "x_rank"] == 1.0, (
+        "NaN takes the top rank when it reaches rank_expr — this is the defect"
+    )
+
+    guarded = con.execute(
+        f"SELECT ticker, {xsec.rank_expr('x')} AS x_rank "
+        f"FROM (SELECT * REPLACE ({xsec.finite('x')} AS x) FROM t) ORDER BY ticker"
+    ).df()
+    assert pd.isna(guarded.set_index("ticker").loc["CCC", "x_rank"])
+    assert guarded["x_rank"].notna().sum() == 2, "only the real values rank"
+    con.close()

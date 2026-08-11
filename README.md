@@ -100,6 +100,24 @@ a column answerable rather than merely present: `rsi_14` here is a 14-session
 **simple** average, not the exponential one a charting package draws, and
 reading the expression is the only way to know which you have.
 
+## Is the database sound?
+
+```bash
+.venv/Scripts/vnr audit
+```
+
+19 checks over the published schema — keys present and unique, no NaN or
+infinity anywhere, ranks inside [0,1], labels within their enumerations, every
+ticker known to the service, no orphan catalog rows, no all-NULL feature, and
+whether the published copy matches the mirror it claims to come from. Non-zero
+exit if any fail, and every result is recorded in `research.quality_checks` so
+"was the database clean the day we traded" is answerable afterwards.
+
+This is not what the test suite does. Those prove the CODE is right on synthetic
+input; this asks whether the DATA in front of you is sound. The first run found
+305 rows carrying NaN, each of them ranked as the most extreme name in the
+market that day.
+
 ## Ratings
 
 `vnr rating` scores every name in the day's universe: one Z-score per dimension,

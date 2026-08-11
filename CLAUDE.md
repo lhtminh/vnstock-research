@@ -87,6 +87,7 @@ actually traded on which day.
 | `spec_label_adj` differs from `spec_label` in only ONE setting | it used to be three. Volatility→magnitude helped (8 of 8), range→pct did nothing consistent, PVDI→percentile hurt. Both were reverted on measurement. A test pins the difference at exactly one setting so the reverts are not undone by someone who remembers the argument but not the result |
 | a feature's `direction` is declared, not measured from its own IC | deliberate, and `vnr rating --check` exists to keep it honest. A sign fitted to the sample flips between periods and takes the explanation with it, and the rating's entire job is being explainable. 58 of 63 agree today; the five that do not are a conversation, not a patch. Where a declaration contradicted the module's OWN documented reasoning — peer_gap_5 is called mean-reverting in its own comment, net_issuance_252 sits under a paragraph saying issuers underperform — that was a mistake and was fixed |
 | `research.features` stores REAL, but the parquet is DOUBLE | deliberate. `dataset.load()` casts every feature to float32 before the model sees one, so the extra bits are never consumed — 505 MB instead of 918 MB, and both paths round the same double to the same float32. Prices, returns and labels stay DOUBLE, because that reasoning does not cover them |
+| NaN is cleared before ranking as well as NULL | not belt-and-braces. `rank_expr` guards `IS NOT NULL` and **NaN is not NULL** — it is a value, it sorts last, and it therefore takes rank 1.0. Found in the PUBLISHED table on 2026-08-11: 177 rows of `skew_21` and 128 of `mkt_corr_60` rated the most extreme name in the market that day on an undefined calculation. SKEWNESS and CORR return NaN on a window with no variance. `vnr audit` now checks for it. Note a pandas fixture CANNOT reproduce this — float64 NaN is pandas' own NULL sentinel, so it arrives in DuckDB as NULL; the test builds the NaN in SQL |
 | a feature with a NULL raw value has a NULL rank, not 0.5 | correct, and it was a real defect until `c2d20a9`. `PERCENT_RANK() OVER (ORDER BY col)` sorts NULLs last, so every row missing a value was bunched at the TOP of that day's ranking: measured 2026-08-04, 47 names with no `peer_corr` all scored 0.836 while the 234 real values spanned 0.000-0.832 — "no data" read to the model as "higher than 83% of the market". Invariant 3 one layer up. Fixed by ranking only real values; imputing a middle value instead would be inventing data. Verified on the published table: 317,121 rows have no `peer_corr` and **none** carries a rank |
 
 ## Where the reasoning lives
@@ -100,6 +101,9 @@ actually traded on which day.
   data disagree. Not a training target: every input is trailing
 - `rating/score.py` — why the directions are declared and not fitted, and the
   three things a naive Z-score would get wrong
+- `io/audit.py` — what "the data is sound" means here, and why the test suite
+  cannot answer it
+- `features/xsec.py` — the NULL-rank defect, and the same defect as NaN
 - `features/registry.py` — the nine dimensions, and why renaming one can break a
   lateral-alias reference
 - `model/cv.py` — the purge diagram
@@ -116,6 +120,7 @@ actually traded on which day.
 .venv/Scripts/vnr rating                   # ~10s, dimension Z-scores + A-E grade
 .venv/Scripts/vnr rating --check           # where a declared direction disagrees
 .venv/Scripts/vnr publish                  # ~90s, everything -> research schema
+.venv/Scripts/vnr audit                    # 19 data checks; non-zero exit if any fail
 ```
 
 Install core before extras, and always with `-e`: `pip install ".[backtest]"`

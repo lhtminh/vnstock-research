@@ -119,6 +119,24 @@ def publish() -> None:
 
 
 @app.command()
+def audit() -> None:
+    """Check the published `research` schema and record the result.
+
+    Asks whether the DATA in front of you is sound, which the test suite does
+    not — that proves the code is right on synthetic input. Results land in
+    `research.quality_checks`, so "was the database clean the day we traded" is
+    answerable afterwards. Exits non-zero if anything failed.
+    """
+    import sys
+
+    from vnresearch.io import audit as au
+
+    failed = [c for c in au.run() if not c.passed]
+    if failed:
+        sys.exit(1)
+
+
+@app.command()
 def alpha(horizon: int = 5, top: int = 10) -> None:
     """Measure each feature standalone and write a markdown report."""
     from vnresearch.alpha import report
