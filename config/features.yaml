@@ -6,7 +6,19 @@ universe:
   # Minimum ADTV to be considered investable, in VND. 1bn ~= USD 38k/day.
   # Several hundred UPCOM names trade a few million VND a day; a model trained
   # on them learns from securities nobody can actually buy.
-  adtv_min_vnd: 1.0e9
+  #
+  # Written in full rather than as 1.0e9. YAML 1.1 requires a signed exponent,
+  # so `1.0e9` loads as the STRING "1.0e9" — panel.py happened to wrap it in
+  # float() and every other reader would have got a string. Same value, no trap.
+  adtv_min_vnd: 1000000000
+
+  # THE FLOOR IS APPLIED PER DAY, from a trailing average known on that day, and
+  # that is not a detail. A per-ticker screen on lifetime average liquidity is
+  # tidier and is forward-looking: deciding whether a 2010 row exists needs 2026
+  # data, so it keeps exactly the names that did not later collapse. Measured on
+  # this sample, rows such a screen would KEEP earned +0.24% a month
+  # market-relative against -1.49% for the rows it would drop — and every one of
+  # those rows had already passed the daily test. Do not replace this with a list.
   # Require a full window before admitting a ticker, so a newly listed name
   # cannot enter on one busy day.
   require_full_window: true

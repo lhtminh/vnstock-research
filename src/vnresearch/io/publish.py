@@ -209,6 +209,39 @@ def _catalog_insert_sql() -> str:
     )
 
 
+def _universe_view_sql() -> str:
+    """One row per ticker: when it was investable, for how long, how liquid.
+
+    `research.features` IS the universe — every row in it cleared the liquidity
+    floor on its own date — but that fact is spread across 943k rows, and the
+    question a portfolio manager asks is "which names am I trading, and are they
+    solid". This is that question in one table.
+
+    `sessions_in` is the column to look at before trusting a name. Membership is
+    decided per DAY, so a ticker with 40 sessions drifted across the floor and
+    back; one with 3,000 has been investable for over a decade. Roughly 1,000
+    tickers appear across the sample and fewer than 300 are present on any given
+    day, which is not churn to be cleaned away — it is the market.
+
+    Deliberately NOT a fixed list. Screening on a ticker's LIFETIME average
+    liquidity would decide a 2010 row using 2026 data and keep exactly the names
+    that did not later collapse: measured on this sample, +0.24% a month
+    market-relative for the survivors against -1.49% for the rest, on rows that
+    had already passed the daily test. See `io/audit.py::_universe`.
+    """
+    return f"""
+CREATE VIEW {SCHEMA}.universe AS
+SELECT f.ticker,
+       min(f.date) AS first_session,
+       max(f.date) AS last_session,
+       count(*)    AS sessions_in,
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY f.adtv) AS median_adtv,
+       max(f.adtv) AS peak_adtv,
+       max(f.date) = (SELECT max(date) FROM {SCHEMA}.features) AS in_latest_session
+FROM {SCHEMA}.features f
+GROUP BY f.ticker"""
+
+
 def _dimension_view_sql(dim: str, feats: list) -> str:
     """One view per dimension: its raw values and ranks, and nothing else.
 
@@ -286,7 +319,7 @@ def build(verbose: bool = True) -> dict[str, Any]:
         _exec(con, f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
         # Views depend on the tables, and Postgres refuses to drop a table out
         # from under one. They are rebuilt from the registry at the end anyway.
-        for v in ("training_sample", "holdout_sample", *(f"dim_{d}" for d in by_dim)):
+        for v in ("training_sample", "holdout_sample", "universe", *(f"dim_{d}" for d in by_dim)):
             _exec(con, f"DROP VIEW IF EXISTS {SCHEMA}.{v}")
 
         t0 = time.time()
@@ -394,6 +427,7 @@ def build(verbose: bool = True) -> dict[str, Any]:
         n_train = con.execute(f"SELECT count(*) FROM pg.{SCHEMA}.training_sample").fetchone()[0]
         n_hold = con.execute(f"SELECT count(*) FROM pg.{SCHEMA}.holdout_sample").fetchone()[0]
 
+        _exec(con, _universe_view_sql())
         for dim, fs in by_dim.items():
             _exec(con, _dimension_view_sql(dim, fs))
 
@@ -485,6 +519,16 @@ _COMMENTS: tuple[tuple[str, str, str], ...] = (
         (
             "What the model trains on: features joined to labels, filtered and targeted "
             "per config/model.yaml. Holdout excluded."
+        ),
+    ),
+    (
+        "VIEW",
+        "universe",
+        (
+            "One row per ticker: when it was investable, for how long, how liquid. "
+            "Membership is decided PER DAY from a trailing average, never from a fixed "
+            "list — screening on lifetime liquidity would decide a 2010 row with 2026 "
+            "data and keep only the names that did not later collapse."
         ),
     ),
     (

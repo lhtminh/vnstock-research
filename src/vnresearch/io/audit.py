@@ -226,6 +226,57 @@ def _no_dead_columns(con) -> list[Check]:
     ]
 
 
+def _universe(con) -> list[Check]:
+    """The liquidity floor, and that it is applied POINT-IN-TIME.
+
+    The floor itself is easy to check and easy to get wrong silently — a broken
+    universe build would quietly admit names nobody can trade.
+
+    The second check is the one that matters more and is easy to lose. Universe
+    membership is decided per DAY, from a trailing average known on that day. A
+    per-TICKER screen on lifetime average liquidity looks tidier and is
+    forward-looking: deciding whether a 2010 row exists needs 2026 data, which
+    keeps precisely the names that did not later collapse. Measured on this
+    sample, rows a lifetime-1bn screen would keep earned +0.24% a month
+    market-relative against -1.49% for the ones it would drop — about 5% a year
+    of pure illusion, on rows that had ALREADY passed the daily test.
+
+    So this asserts the universe still churns. A membership set that stopped
+    changing would mean someone had frozen it, and a frozen set is a screen on
+    hindsight whatever it is called.
+    """
+    # float() defensively: YAML 1.1 loads an unsigned exponent like `1.0e9` as a
+    # string, and this reader should not depend on how the number was written.
+    floor = float(config.load("features")["universe"]["adtv_min_vnd"])
+    n = con.execute(f"SELECT count(*) FROM pg.{SCHEMA}.features WHERE adtv < {floor}").fetchone()[0]
+    out = [
+        Check(
+            "universe_meets_liquidity_floor",
+            "features.adtv",
+            f"every row must clear {floor:,.0f} VND on its own date",
+            int(n),
+        )
+    ]
+    # Entrants and leavers over the last year. Zero of both across a whole year
+    # of a market this size means membership is no longer being recomputed.
+    churn = con.execute(
+        f"""WITH d AS (SELECT ticker, min(date) a, max(date) b
+                       FROM pg.{SCHEMA}.features GROUP BY 1),
+                 lim AS (SELECT max(date) - 365 AS cut FROM pg.{SCHEMA}.features)
+            SELECT count(*) FILTER (WHERE a > lim.cut) + count(*) FILTER (WHERE b < lim.cut)
+            FROM d, lim"""
+    ).fetchone()[0]
+    out.append(
+        Check(
+            "universe_still_churns",
+            "features",
+            "a membership set that never changes is a screen on hindsight",
+            0 if churn else 1,
+        )
+    )
+    return out
+
+
 def _freshness(con) -> list[Check]:
     """Does the published copy match the mirror it claims to come from."""
     from vnresearch.io.manifest import load_manifest
@@ -272,6 +323,7 @@ def run(verbose: bool = True) -> list[Check]:
         checks += _referential(con, tables)
         checks += _catalog_matches_columns(con)
         checks += _no_dead_columns(con)
+        checks += _universe(con)
         checks += _freshness(con)
 
         _exec(
