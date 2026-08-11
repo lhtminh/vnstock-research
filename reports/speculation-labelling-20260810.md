@@ -1,36 +1,86 @@
-# Speculation labelling — both label sets, and three things to take back to the mentor
+# Speculation labelling — the document is better than the critique of it
 
-> **Update, same day.** Both variants are now built on every run and sit side by
-> side in the same table: `spec_label` is the document exactly as written,
-> `spec_label_adj` applies the three corrections measured below. Nothing else
-> differs — same four dimensions, same 40/30/15/15 weights, same 0-3 scoring,
-> same 0.75/1.5/2.25 thresholds — and `test_speculation.py` enforces that the
-> gap stays exactly three settings wide.
+> **VALIDATION, same day, and it overturns most of what is written below.**
+>
+> Both schemes were scored against forward returns on the dev period only
+> (2009-01-01 .. 2023-12-31 — the holdout was not touched). Outcome is the
+> forward return minus that day's cross-sectional mean, which removes the market
+> move exactly with no beta estimate to get wrong.
+>
+> **The labels do predict underperformance, monotonically, in every cell:**
+>
+> | universe, h=21 | mean excess | forward sd | share losing >20% |
+> |---|---|---|---|
+> | Bình thường | **+0.15%** | 12.63% | 2.32% |
+> | Đầu cơ nhẹ | −0.47% | 14.56% | 4.90% |
+> | Đầu cơ | **−1.74%** | 20.19% | **11.51%** |
+>
+> A name flagged Đầu cơ is **5x more likely to lose a fifth of its value** over
+> the next month than an unflagged one. That is the useful finding, and it is
+> the document's, not mine.
+>
+> **Of my three proposed corrections, one helped and one actively hurt.** All
+> eight combinations were scored; each change is judged by its four pairwise
+> comparisons with the other two settings held fixed, at two horizons — eight
+> independent readings each, not a single best-of-eight pick.
+>
+> | change | verdict | evidence |
+> |---|---|---|
+> | volatility, signed → magnitude | **helps** | better in 8 of 8 |
+> | range, VND → share of price | **no reliable effect** | wins at h=21, loses at h=5, small either way |
+> | PVDI, fixed → percentile | **hurts, worst of the three** | worse in 8 of 8 |
+>
+> Top 2% of each day, universe, mean excess return:
+>
+> | pvdi | vol | range | h=21 | h=5 |
+> |---|---|---|---|---|
+> | mentor | **magnitude** | mentor | **−1.72%** | −0.71% |
+> | mentor | mentor | mentor — *the document* | −1.11% | −0.42% |
+> | percentile | magnitude | pct — *what I proposed* | −0.76% | −0.39% |
+> | percentile | mentor | pct | −0.04% | −0.14% |
+>
+> **So: change exactly one thing.** `adjusted` now differs from `mentor` only in
+> the volatility measure; the other two were reverted on evidence.
+>
+> Why the PVDI change was wrong: rare-by-design *is* the point. Forcing PVDI to
+> fire on 5% of rows turns a precise signal into a generic one. The 58-row top
+> bucket is a real consequence of the document's weighting — but it is a
+> cosmetic complaint, and the fix for it cost more than the complaint was worth.
+>
+> The range criticism was descriptively true and predictively irrelevant.
+> Absolute VND really does track price level; that just does not make it worse
+> at this job.
+>
+> Caveat: eight configurations on dev is a search, and this repo has been burned
+> before by dev and holdout ranking configurations in opposite orders. The
+> pairwise consistency (8 of 8, across two horizons) is what makes the volatility
+> result worth acting on; a best-of-eight pick alone would not be.
+
+
+> **What shipped.** Both label sets are built on every run and sit side by side:
+> `spec_label` is the document exactly as written, `spec_label_adj` changes the
+> volatility measure and nothing else. `test_speculation.py` pins the gap at
+> exactly one setting, so the two reverts above are not undone later by someone
+> who remembers the argument but not the measurement.
 >
 > | | Bình thường | Đầu cơ nhẹ | Đầu cơ | Đầu cơ mạnh |
 > |---|---|---|---|---|
-> | **mentor** | 83.87% | 15.44% | 0.69% | **0.002%** (58 rows) |
-> | **adjusted** | 77.73% | 19.58% | 2.62% | **0.07%** (1,721 rows) |
+> | **mentor** | 83.87% | 15.44% | 0.69% | 0.002% (58 rows) |
+> | **adjusted** | 84.06% | 15.16% | 0.78% | 0.005% (119 rows) |
 >
-> They disagree on **381,397 rows**, 15.0% of the 2,544,847 that carry a score.
-> The top bucket goes from unreachable to rare-but-real, which is what it was
-> presumably meant to be. Component distributions after the change:
+> They disagree on **120,319 rows**, 4.7% of the 2,544,847 that carry a score.
 >
-> | component | Bình thường | nhẹ | Đầu cơ | mạnh |
-> |---|---|---|---|---|
-> | PVDI (mentor, fixed cut-offs) | 80.02% | 16.55% | 3.41% | **0.03%** |
-> | PVDI (adjusted, percentiles) | 74.81% | 15.06% | 5.07% | **5.05%** |
-> | Turnover — shared, one form only | 75.04% | 14.55% | 5.05% | 5.37% |
-> | Volatility (signed → magnitude) | 75.41% | 14.79% | 4.90% | 4.91% |
-> | | 75.36% | 14.70% | 4.92% | 5.01% |
-> | Range (VND → share of price) | 73.71% | 15.40% | 5.29% | 5.60% |
-> | | 75.01% | 14.84% | 4.95% | 5.19% |
+> The distributions are nearly identical, and that is the point worth
+> understanding: percentile scoring fills the buckets by construction whatever
+> you feed it, so the *shape* cannot tell you whether a measure is any good. What
+> changes is **which stocks** land in each bucket — 35.4% of daily volatility
+> labels move. A distribution table cannot show a broken measure; only the
+> disagreement count, the crash test, and the forward-return validation can.
 >
-> Note what this shows about volatility and range: the *distributions* barely
-> move, because percentile scoring fills the buckets by construction either way.
-> It is **which stocks** land in them that changes — 35.4% and 33.0% of daily
-> labels respectively. A distribution table cannot show a broken measure; only
-> the disagreement counts and the crash test below can.
+> For the record, the earlier three-change variant produced a much flatter
+> distribution (77.73 / 19.58 / 2.62 / 0.07%, 1,721 rows in the top bucket) and
+> looked more useful for it. It ranked worse. That is why the distribution table
+> is not the test.
 
 
 Source: `Phương Pháp Nhận Diện Dấu Hiệu Đầu Cơ Cổ Phiếu`

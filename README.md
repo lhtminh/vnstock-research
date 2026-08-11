@@ -106,12 +106,19 @@ are built every run, side by side:
 | `*_label_adj` | components, adjusted (turnover is shared — it has only one form here) |
 | `vol_label_12m`, `range_label_12m` (+ `_adj`) | the document's 12-month "nhãn tổng thể" |
 
-The adjusted variant keeps the mentor's four dimensions, 40/30/15/15 weights,
-0-3 scoring and 0.75/1.5/2.25 thresholds, and changes only what was measured to
-be broken: volatility to magnitude (the signed mean cannot see a crash), range
-to a share of price (in đồng it mostly ranks price level), and PVDI to
-percentiles so all four components share one scale. See
-`reports/speculation-labelling-20260810.md` and `config/speculation.yaml`.
+The adjusted variant changes **one** thing: volatility from the signed 5-day
+mean to its magnitude, because the signed form cannot see a stock falling.
+Everything else is the document's.
+
+Two further changes were proposed and then **reverted on measurement** — scoring
+PVDI by percentile made the labels worse at predicting forward returns in 8 of 8
+pairwise comparisons, and normalising Range by price did nothing consistent.
+The document was closer to right than the critique of it.
+
+The labels do carry information. Over the dev period, a name flagged `Đầu cơ`
+was **5x more likely to lose more than 20%** in the following month than an
+unflagged one (11.5% vs 2.3%), with mean excess return −1.74% against +0.15%.
+See `reports/speculation-labelling-20260810.md`.
 
 **Not a training target** — every input is trailing, so it describes the present
 rather than predicting the future. `label/forward.py` remains the model's label.

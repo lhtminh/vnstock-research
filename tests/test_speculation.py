@@ -188,17 +188,22 @@ def _panel(tmp_path, n_days=300, n_tickers=4, seed=3):
     return path
 
 
-def test_both_variants_are_built_and_only_three_things_differ():
-    """Following the document and improving on it are not a one-time choice —
-    both label sets are in the file, so the difference is a query. What must NOT
-    differ is everything else: same four dimensions, same weights, same 0-3
-    scoring, same composite thresholds."""
+def test_the_adjusted_variant_changes_only_what_the_evidence_supports():
+    """Three changes were proposed from reading the formulas. Tested against
+    forward returns, only the volatility one held up — the PVDI change hurt in
+    8 of 8 pairwise comparisons, and the range change was inconsistent. Both
+    were reverted, so the adjusted variant differs in exactly one setting.
+
+    Pinned because reverting a change on evidence is easy to undo by accident
+    later, when only the argument for it is remembered and not the measurement.
+    """
     cfg = config.load("speculation")
     m, a = cfg["variants"]["mentor"], cfg["variants"]["adjusted"]
 
     assert set(m) == set(a) == {"volatility", "range", "pvdi_scoring"}
     assert m == {"volatility": "signed", "range": "absolute", "pvdi_scoring": "fixed"}
-    assert a == {"volatility": "abs", "range": "pct", "pvdi_scoring": "percentile"}
+    assert a == {"volatility": "abs", "range": "absolute", "pvdi_scoring": "fixed"}
+    assert [k for k in m if m[k] != a[k]] == ["volatility"]
 
     # The mentor's variant carries no suffix, so every column the document names
     # means what the document means by it.

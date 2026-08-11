@@ -59,36 +59,50 @@ turnover:
 # next to each other so the difference is a query rather than an argument.
 #
 #   mentor    the document exactly as written    -> spec_label
-#   adjusted  three changes, listed below        -> spec_label_adj
+#   adjusted  ONE change, listed below           -> spec_label_adj
 #
 # Everything else is the mentor's in both: the four dimensions, the 40/30/15/15
 # weights, the 0-3 scoring, the 0.75/1.5/2.25 thresholds, the percentile idea,
 # and the 12-month "tỷ lệ đầu cơ".
+#
+# Three changes were proposed on the strength of reading the formulas. Tested
+# against forward returns, ONE helped and one actively hurt. The document was
+# closer to right than the critique was — the two settings below that now read
+# the same as `mentor` were reverted on evidence, not taste.
 variants:
   mentor:
     volatility: signed
     range: absolute
     pvdi_scoring: fixed
   adjusted:
-    # 1. VOLATILITY, signed -> magnitude. The document's formula averages the
-    #    SIGNED daily change, so a falling stock lands at the BOTTOM of the
-    #    distribution while the buckets only flag the top. Its own theory
-    #    paragraph says volatility rises on panic selling too, so the prose and
-    #    the formula disagree. MEASURED: of 14,561 rows where a stock fell more
-    #    than 5% a day over five sessions, the signed form calls ALL of them
-    #    Bình thường. 35.4% of daily labels change.
+    # ONE change, and it is the only one the evidence supports.
+    #
+    # All eight combinations of the three candidate changes were scored against
+    # forward returns on the dev period — see reports/. Each change is judged by
+    # its four pairwise comparisons (the other two settings held fixed), at two
+    # horizons, so each gets eight independent readings rather than one.
+    #
+    # 1. VOLATILITY, signed -> magnitude. HELPS, 8 of 8. The document's formula
+    #    averages the SIGNED daily change, so a falling stock lands at the
+    #    bottom of the distribution while the buckets only flag the top; its own
+    #    theory paragraph says volatility rises on panic selling too. Of 14,561
+    #    rows where a stock fell more than 5% a day over five sessions, the
+    #    signed form calls ALL of them Bình thường.
     volatility: abs
-    # 2. RANGE, VND -> share of price. P_high - P_low unnormalised mostly ranks
-    #    price level. MEASURED: median price across the four buckets runs
-    #    6,910 / 15,000 / 21,740 / 34,780. Dividing by the previous close
-    #    inverts it (9,360 / 7,650 / 6,950 / 6,500), the direction penny-stock
-    #    speculation actually runs. 33.0% of daily labels change.
-    range: pct
-    # 3. PVDI, fixed thresholds -> percentiles, so all four components are on
-    #    one scale. With 0.40 of the weight on absolute cut-offs that it clears
-    #    0.03% of the time, while the other three fill their top bucket by
-    #    construction, only 58 rows in 2.5M ever reached Đầu cơ mạnh.
-    pvdi_scoring: percentile
+    #
+    # 2. RANGE, VND -> share of price. NO RELIABLE EFFECT. Absolute VND does
+    #    largely rank price level — median price across the buckets runs
+    #    6,910 / 15,000 / 21,740 / 34,780 — but changing it wins at one horizon
+    #    and loses at the other, by margins smaller than the volatility effect.
+    #    Reverted: there is no evidence to overrule the document here.
+    range: absolute
+    #
+    # 3. PVDI, fixed thresholds -> percentiles. HURTS, 8 of 8, and it is the
+    #    single most damaging change of the three. Rare-by-design is the point:
+    #    forcing PVDI to fire on 5% of rows dilutes a precise signal into a
+    #    generic one. The 58-row top bucket is a real consequence of the
+    #    document's weighting, but it is not a defect worth fixing this way.
+    pvdi_scoring: fixed
 
 # Bình thường 0, Đầu cơ nhẹ 1, Đầu cơ 2, Đầu cơ mạnh 3.
 quantiles: [0.75, 0.90, 0.95]
