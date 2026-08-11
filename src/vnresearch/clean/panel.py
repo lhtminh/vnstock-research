@@ -32,14 +32,32 @@ WITH bars AS (
     -- it. A suspect_move is a feed defect — some reach +682% — and one of those
     -- inside a 252-session volatility estimate corrupts the whole year.
     --
-    -- Only `ret` is nulled, not `close`: the price is still needed to value a
-    -- position and to compute turnover. Momentum features read `close`
-    -- directly, so a defect that lands on a window ENDPOINT can still reach
-    -- them; that residual is accepted because the affected bars are 0.55% of
-    -- the panel and the alternative breaks the LAG chain everywhere.
-    SELECT * EXCLUDE (ret),
+    -- OPEN, HIGH AND LOW GO TOO. If the return is not believed then neither is
+    -- the range that produced it, and a suspect_ohlc bar is by definition one
+    -- whose OHLC relationships are broken. These three feed only the range and
+    -- volatility features — Parkinson, Garman-Klass, Rogers-Satchell, ATR,
+    -- stochastic, Keltner, the channel — where a single bad high corrupts every
+    -- window containing it, exactly as a bad return does. Nulling them makes
+    -- those estimators skip the bar, which is the same treatment `ret` gets.
+    --
+    -- `open` is safe to drop despite being the label's ENTRY price: entry also
+    -- requires `entry_tradeable`, and these bars are untradeable by definition,
+    -- so no label that would have survived is lost.
+    --
+    -- CLOSE STAYS. It is needed to value a position and to compute turnover, and
+    -- momentum features read it directly, so a defect landing on a window
+    -- ENDPOINT can still reach them. That residual is accepted because the
+    -- affected bars are 0.55% of the panel and the alternative breaks the LAG
+    -- chain everywhere.
+    SELECT * EXCLUDE (ret, open, high, low),
            CASE WHEN bar_status IN ('suspect_move', 'band_anomaly', 'suspect_ohlc')
-                THEN NULL ELSE ret END AS ret
+                THEN NULL ELSE ret END AS ret,
+           CASE WHEN bar_status IN ('suspect_move', 'band_anomaly', 'suspect_ohlc')
+                THEN NULL ELSE open END AS open,
+           CASE WHEN bar_status IN ('suspect_move', 'band_anomaly', 'suspect_ohlc')
+                THEN NULL ELSE high END AS high,
+           CASE WHEN bar_status IN ('suspect_move', 'band_anomaly', 'suspect_ohlc')
+                THEN NULL ELSE low END AS low
     FROM read_parquet('{{bars}}')
 ),
 -- The benchmark, with impossible prints removed.

@@ -257,6 +257,31 @@ def _universe(con) -> list[Check]:
             int(n),
         )
     ]
+    # A defect-flagged bar is one the classifier could not vouch for, so its own
+    # range must not become a feature value. panel.py nulls open, high and low
+    # on those bars; this checks that it still does.
+    #
+    # SAME-BAR features only. A windowed estimator like parkinson_21 SHOULD
+    # still have a value on such a bar — the average skips the nulled day and is
+    # computed from the twenty good ones around it, which is the whole point of
+    # nulling rather than dropping the row. Checking those too was this check's
+    # first version and it failed on correct data.
+    n = con.execute(
+        f"""SELECT count(*) FROM pg.{SCHEMA}.features
+            WHERE bar_status IN ('suspect_move', 'band_anomaly', 'suspect_ohlc')
+              AND (hl_range IS NOT NULL
+                   OR close_location IS NOT NULL
+                   OR intraday_ret IS NOT NULL)"""
+    ).fetchone()[0]
+    out.append(
+        Check(
+            "defect_bars_have_no_range",
+            "features",
+            "a bar whose OHLC is not believed must not become a same-session range value",
+            int(n),
+        )
+    )
+
     # Entrants and leavers over the last year. Zero of both across a whole year
     # of a market this size means membership is no longer being recomputed.
     churn = con.execute(
