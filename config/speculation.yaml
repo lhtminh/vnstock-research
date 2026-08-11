@@ -107,6 +107,38 @@ variants:
 # Bình thường 0, Đầu cơ nhẹ 1, Đầu cơ 2, Đầu cơ mạnh 3.
 quantiles: [0.75, 0.90, 0.95]
 
+# BÁN THÁO — panic selling. NOT part of the mentor's document; a fifth component
+# added because the four in it detect a stock being pushed UP and nothing else.
+#
+# Why this is separate rather than a wider Volatility. Measured on 9,776 sessions
+# where a stock fell more than 5% a day for a week: his Volatility component
+# labelled 100.0% of them Bình thường — not 95%, exactly 100%, because a signed
+# mean puts a crash at the BOTTOM of the distribution and the buckets only flag
+# the top. Turnover and Range did partly fire (mean scores 0.52 and 0.57), but
+# the composite averaged 0.356 against the 1.50 that Đầu cơ needs.
+#
+# So `spec_score` is left EXACTLY as he wrote it and this scores alongside.
+# Folding dumping into it would also be a category error: đầu cơ means
+# speculation, and a stock being dumped is not being speculated on.
+#
+# The 40/30/15/15 split deliberately mirrors his, one role at a time: a primary
+# measure of the phenomenon, a confirmation that the volume is real, and two
+# supporting reads.
+dumping:
+  weights:
+    downside: 0.40    # how hard it is actually falling
+    sell_volume: 0.30 # is the selling real, or is it drifting down on nothing
+    close_weakness: 0.15
+    limit_down: 0.15
+  thresholds: [0.75, 1.5, 2.25]
+  window: 21          # sell-volume and close-weakness lookback
+  limit_window: 63    # matches the document's own limit_*_frac window
+  labels:
+    - binh_thuong
+    - ban_thao_nhe
+    - ban_thao
+    - ban_thao_manh
+
 composite:
   weights:
     pvdi: 0.40

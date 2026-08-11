@@ -237,3 +237,64 @@ def test_a_measure_is_absent_until_its_history_exists(tmp_path, monkeypatch):
     per_ticker = df.sort_values(["ticker", "date"]).groupby("ticker").cumcount() + 1
     assert df.loc[per_ticker < long, "pvdi"].isna().all()
     assert df.loc[per_ticker >= long, "pvdi"].notna().any()
+
+
+def test_the_dumping_component_has_its_own_vocabulary():
+    """A stock being dumped is not a stock being speculated on. Reusing dau_co
+    for both would make the column lie about which of the two it saw."""
+    d = config.load("speculation")["dumping"]["labels"]
+    assert d[0] == "binh_thuong"  # the clean state is shared
+    assert set(d[1:]).isdisjoint(set(LABELS[1:]))
+    assert all(x.startswith("ban_thao") for x in d[1:])
+
+
+def test_dumping_mirrors_the_mentors_weight_structure():
+    """Same 40/30/15/15 shape, one role at a time: the phenomenon, a
+    confirmation that the volume is real, and two supporting reads."""
+    d = config.load("speculation")["dumping"]
+    assert sorted(d["weights"].values(), reverse=True) == [0.40, 0.30, 0.15, 0.15]
+    assert d["weights"]["downside"] == 0.40
+    assert d["thresholds"] == config.load("speculation")["composite"]["thresholds"]
+    assert set(d["weights"]) == set(sp._DUMP_ALL)
+
+
+def test_the_downside_measure_guards_the_least_trap():
+    """`LEAST(NULL, 0)` returns 0 in DuckDB, so the bare form counts a missing
+    return as a genuine flat day and dilutes the fall. panel.py nulls `ret` on
+    exactly the defect-flagged bars, which makes the worst data the most
+    affected. Invariant 3, and the trap downside_vol_21 shipped with."""
+    expr = sp._DUMP["downside"][0]
+    assert "ret IS NOT NULL" in expr, "unguarded LEAST would read NULL as a flat day"
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE t AS SELECT * FROM (VALUES (-0.05), (NULL), (NULL), (0.02)) v(ret)")
+    guarded = con.execute(
+        "SELECT -AVG(CASE WHEN ret IS NOT NULL THEN LEAST(ret, 0) END) FROM t"
+    ).fetchone()[0]
+    bare = con.execute("SELECT -AVG(LEAST(ret, 0)) FROM t").fetchone()[0]
+    assert guarded == pytest.approx(0.025)
+    assert bare == pytest.approx(0.0125), "the bare form halves the measured fall"
+    con.close()
+
+
+def test_limit_down_is_measured_outside_the_normal_bar_frame():
+    """`base` filters to bar_status = 'normal', which excludes every limit_down
+    bar there is. Counting them inside that frame returns zero on every row and
+    looks like a stock that never hits the floor."""
+    assert config.load("speculation")["universe"]["bar_status"] == "normal"
+    assert sp._DUMP_LIMIT not in sp._DUMP, "must not be computed in the normal-bar frame"
+    assert sp._DUMP_LIMIT in sp._DUMP_ALL, "but must still be scored"
+
+    sql = sp._measure_sql(config.load("speculation"))
+    assert "dump_limit_down" in sql
+    # Its source must be the panel, not `base`.
+    tail = sql[sql.index("dump_limit_down") :]
+    assert "read_parquet" in tail and "bar_status = 'limit_down'" in tail
+
+
+def test_the_mentors_composite_does_not_see_the_fifth_component():
+    """spec_score stays exactly the document's, so it remains comparable to it.
+    The dumping score sits alongside rather than inside."""
+    score = sp.weighted_score(config.load("speculation")["composite"]["weights"])
+    for name in sp._DUMP_ALL:
+        assert f"dump_{name}" not in score

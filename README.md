@@ -157,6 +157,18 @@ are built every run, side by side:
 
 The adjusted variant changes **one** thing: volatility from the signed 5-day
 mean to its magnitude, because the signed form cannot see a stock falling.
+
+A **fifth component detects dumping** (`dump_score`, `dump_label`), which his
+four do not: on sessions where a stock fell more than 5% a day for a week, his
+Volatility labelled 100.0% of them Bình thường and the composite reached Đầu cơ
+on 0.5%. The new one flags 73.1%. Same architecture — 0.40 downside, 0.30
+sell-volume, 0.15 close-weakness, 0.15 limit-down, same pooled percentiles and
+thresholds — but its own `ban_thao` vocabulary, and `spec_score` is untouched.
+
+Read it as RISK, not direction. Tail risk is monotone (2.8% -> 4.6% -> 8.0% ->
+8.8% chance of losing over 20%), but the extreme bucket's average return inverts
+to +2.05% — the deepest panics bounce. It is deliberately not wired into the
+rating penalty for that reason.
 Everything else is the document's.
 
 Two further changes were proposed and then **reverted on measurement** — scoring

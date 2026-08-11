@@ -255,6 +255,53 @@ _RANGE = {"absolute": "high - low", "pct": "(high - low) / NULLIF(prev_close, 0)
 _SUFFIX = {"mentor": "", "adjusted": "_adj"}
 
 
+# BÁN THÁO. Four sub-measures, all oriented so HIGHER MEANS MORE DUMPING, which
+# is what lets the same ascending percentile buckets score them as the mentor's.
+#
+# The LEAST is guarded, and that guard is the whole reason this reads awkwardly:
+# `LEAST(NULL, 0)` returns 0 in DuckDB, not NULL, so the bare form would count
+# every missing return as a genuine flat day and dilute the fall. panel.py nulls
+# `ret` on exactly the defect-flagged bars, which makes the worst data the most
+# affected. Invariant 3, and the same trap `downside_vol_21` shipped with.
+# `{w}` is the OVER clause, substituted per measure so each can use its own
+# window length without any of them hardcoding a number.
+_DUMP = {
+    # How hard it is actually falling. Only losing days count — negated so the
+    # number rises as the stock drops.
+    "downside": (
+        "-AVG(CASE WHEN ret IS NOT NULL THEN LEAST(ret, 0) END) {w}",
+        "smooth",
+    ),
+    # Is the selling real? The share of traded volume that arrived on down days.
+    # The mirror of obv_frac, and the reason a slow drift on no volume does not
+    # score the same as a stampede.
+    "sell_volume": (
+        "SUM(CASE WHEN ret < 0 THEN volume ELSE 0 END) {w} / NULLIF(SUM(volume) {w}, 0)",
+        "window",
+    ),
+    # Who held the close. Near the low means sellers were still there at the
+    # bell, which is a different day from one that fell early and recovered.
+    "close_weakness": (
+        "AVG((high - close) / NULLIF(high - low, 0)) {w}",
+        "window",
+    ),
+}
+
+# Forced selling, and Vietnam-specific: with a daily band, a sell queue that
+# cannot clear pins the stock at the floor. No market without limits has this.
+#
+# COMPUTED SEPARATELY, and that is not a stylistic choice. `base` filters to
+# bar_status = 'normal' — the universe the mentor's four components are measured
+# over — which excludes every limit_down bar there is. Counting them inside that
+# frame would have returned exactly zero on every row, and looked like a stock
+# that never hits the floor rather than a measure that cannot see one.
+_DUMP_LIMIT = "limit_down"
+
+# All four, in weight order. `_DUMP` holds only the three computed inside the
+# normal-bar frame; limit_down is measured separately but scored identically.
+_DUMP_ALL = (*_DUMP, _DUMP_LIMIT)
+
+
 def _measure_sql(cfg: dict) -> str:
     """Every per-ticker measure both variants need, in one pass.
 
@@ -282,15 +329,73 @@ def _measure_sql(cfg: dict) -> str:
               / NULLIF(AVG(volume) OVER ({w} {t["slow"] - 1} PRECEDING AND CURRENT ROW), 0)
             END AS turnover_ratio"""
     )
+
+    # The dumping sub-measures. Each names which window it wants rather than
+    # carrying its own number, so the three lengths stay in config where they
+    # can be compared against the mentor's.
+    d = cfg["dumping"]
+    spans = {"smooth": win["smooth"], "window": d["window"]}
+    for name, (expr, span) in _DUMP.items():
+        n = spans[span]
+        over = f"OVER ({w} {n - 1} PRECEDING AND CURRENT ROW)"
+        cols.append(f"CASE WHEN tsess >= {n} THEN {expr.format(w=over)} END AS dump_{name}")
     # The windows are computed in their own CTE, where only `base` is in scope.
     # Written as one join instead, `PARTITION BY ticker` is ambiguous — the pvdi
     # table carries ticker, date, sess and tsess as well.
+    # The limit-down frequency comes from the UNFILTERED panel — see _DUMP_LIMIT.
+    n_ld = d["limit_window"]
+    panel = config.path("data/clean/panel.parquet").as_posix()
+    ld = f"""
+    SELECT ticker, date, dump_limit_down FROM (
+        SELECT ticker, date,
+               CASE WHEN ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date) >= {n_ld}
+                    THEN AVG(CASE WHEN bar_status = 'limit_down' THEN 1.0 ELSE 0.0 END)
+                         OVER ({w} {n_ld - 1} PRECEDING AND CURRENT ROW)
+               END AS dump_limit_down
+        FROM read_parquet('{panel}')
+        WHERE volume >= {cfg["universe"]["min_volume"]})"""
+
     return f"""
 CREATE OR REPLACE TABLE m AS
 WITH mm AS (SELECT *, {", ".join(cols)} FROM base)
-SELECT mm.*, p.pvdi
-FROM mm JOIN (SELECT ticker, date, pvdi FROM pvdi) p
-     ON p.ticker = mm.ticker AND p.date = mm.date"""
+SELECT mm.*, p.pvdi, l.dump_limit_down
+FROM mm
+JOIN (SELECT ticker, date, pvdi FROM pvdi) p
+     ON p.ticker = mm.ticker AND p.date = mm.date
+LEFT JOIN ({ld}) l ON l.ticker = mm.ticker AND l.date = mm.date"""
+
+
+def _add_dumping(cfg: dict, need: set, label_cols: list, score_cols: list) -> None:
+    """The fifth component, scored exactly like the mentor's four.
+
+    Same pooled market-year percentiles, same 0-3 points, same 40/30/15/15 shape
+    of weights. Only the vocabulary differs — `ban_thao` rather than `dau_co` —
+    because a stock being dumped is not a stock being speculated on, and one
+    column reading Đầu cơ for both would make the table lie about which it saw.
+
+    Kept out of `spec_score` on purpose. That number is the document's and stays
+    comparable to it; this scores alongside.
+    """
+    d = cfg["dumping"]
+    labels = d["labels"]
+    for name in _DUMP_ALL:
+        col = f"dump_{name}"
+        need.add(col)
+        q = f"q_{col}"
+        label_cols.append(
+            f"{_bucket(f'm.{col}', [f'{q}.q_lo', f'{q}.q_mid', f'{q}.q_hi'], labels)}"
+            f" AS {col}_label"
+        )
+    terms = " + ".join(
+        f"{d['weights'][n]}::DOUBLE * "
+        + f"CASE dump_{n}_label "
+        + " ".join(f"WHEN '{lab}' THEN {i}" for i, lab in enumerate(labels))
+        + " END"
+        for n in _DUMP_ALL
+    )
+    score = f"ROUND({terms}, {_SCORE_DP})"
+    score_cols.append(f"({score}) AS dump_score")
+    score_cols.append(f"{_bucket(f'({score})', d['thresholds'], labels)} AS dump_label")
 
 
 def _variant_columns(cfg: dict) -> tuple[list[str], list[str], set[str]]:
@@ -330,6 +435,8 @@ def _variant_columns(cfg: dict) -> tuple[list[str], list[str], set[str]]:
 
         score = weighted_score(cfg["composite"]["weights"], suffix)
         score_cols.append(f"({score}) AS spec_score{suffix}")
+        if suffix == "":
+            _add_dumping(cfg, need, label_cols, score_cols)
         score_cols.append(
             f"{_bucket(f'({score})', cfg['composite']['thresholds'], labels)} AS spec_label{suffix}"
         )

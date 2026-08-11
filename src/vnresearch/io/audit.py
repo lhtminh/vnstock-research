@@ -121,6 +121,21 @@ def _enumerations(con, tables: set[str]) -> list[Check]:
             out.append(
                 Check("label_in_enum", f"speculation.{col}", f"one of: {', '.join(labels)}", int(n))
             )
+    if "speculation" in tables:
+        # The dumping component uses its OWN vocabulary — ban_thao, not dau_co.
+        # One column reading "Đầu cơ" for a stock being dumped would make the
+        # table lie about which of the two it saw.
+        dump = config.load("speculation")["dumping"]["labels"]
+        allowed_d = ", ".join(_literal(x) for x in dump)
+        for col in ("dump_label", "dump_downside_label", "dump_limit_down_label"):
+            n = con.execute(
+                f"""SELECT count(*) FROM pg.{SCHEMA}.speculation
+                    WHERE {col} IS NOT NULL AND {col} NOT IN ({allowed_d})"""
+            ).fetchone()[0]
+            out.append(
+                Check("label_in_enum", f"speculation.{col}", f"one of: {', '.join(dump)}", int(n))
+            )
+
     if "ratings" in tables:
         from vnresearch.rating.score import GRADES
 
