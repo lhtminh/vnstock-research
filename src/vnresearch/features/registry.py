@@ -16,6 +16,44 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+# The dimensions a portfolio manager actually asks about. These are the
+# `category` strings, and they are also the emission order — build.py sorts by
+# (category, name) and derived features resolve by lateral alias, so a feature
+# may only reference one whose (category, name) sorts EARLIER. Renaming a
+# category can therefore break a reference silently; the two that matter today
+# are peer_gap_5 -> ret_5 (peer after momentum) and vol_ratio_21_63 -> vol_21
+# (same dimension, and "vol_2" < "vol_r").
+BETA = "beta"
+LIQUIDITY = "liquidity"
+MOMENTUM = "momentum"
+PEER = "peer"
+RANGE = "range"
+SEASON = "season"
+SPECULATION = "speculation"
+TECHNICAL = "technical"
+VOLATILITY = "volatility"
+
+# Which way is "good" for the rating, per dimension. Used only by
+# `rating/score.py`; nothing in training or the backtest reads it, because a
+# tree does not need to be told which end of a feature it likes.
+#
+# DECLARED, not measured. A rating a portfolio manager cannot explain is not a
+# rating, and a sign fitted to the sample flips between periods and takes the
+# explanation with it. `vnr rating --check` reports where the data disagrees
+# with these, which is a finding to discuss rather than something to silently
+# invert.
+_DIRECTION_BY_CATEGORY = {
+    MOMENTUM: +1,  # winners keep winning, over the horizons here
+    VOLATILITY: -1,  # paid for in drawdown, not returns
+    RANGE: -1,  # wide intraday swings are instability, not opportunity
+    LIQUIDITY: +1,  # you can actually get out
+    BETA: -1,  # market sensitivity is beta, not alpha; invariant 8
+    TECHNICAL: +1,  # oriented individually below where +1 is wrong
+    SPECULATION: -1,  # the whole point of the mentor's document
+    PEER: +1,
+    SEASON: 0,  # a calendar effect is not a quality judgement
+}
+
 
 @dataclass(frozen=True)
 class Feature:
@@ -23,6 +61,8 @@ class Feature:
     sql: str
     category: str
     lookback: int  # sessions of history needed before the value means anything
+    # +1 higher is better, -1 lower is better, 0 excluded from the rating.
+    direction: int = 0
 
 
 _REGISTRY: dict[str, Feature] = {}
@@ -55,10 +95,27 @@ def lag(col: str, n: int) -> str:
     return f"LAG({col}, {n}) OVER (PARTITION BY ticker ORDER BY date)"
 
 
-def register(name: str, sql: str, category: str, lookback: int) -> Feature:
+def register(
+    name: str, sql: str, category: str, lookback: int, direction: int | None = None
+) -> Feature:
+    """Register one feature. `direction` defaults to the dimension's own.
+
+    Pass it explicitly only where the dimension default is wrong for this
+    feature — an RSI is not "higher is better" the way a 6-month return is.
+    """
     if name in _REGISTRY:
         raise ValueError(f"duplicate feature: {name}")
-    f = Feature(name=name, sql=" ".join(sql.split()), category=category, lookback=lookback)
+    if direction is None:
+        direction = _DIRECTION_BY_CATEGORY.get(category, 0)
+    if direction not in (-1, 0, 1):
+        raise ValueError(f"{name}: direction must be -1, 0 or 1, got {direction!r}")
+    f = Feature(
+        name=name,
+        sql=" ".join(sql.split()),
+        category=category,
+        lookback=lookback,
+        direction=direction,
+    )
     _REGISTRY[name] = f
     return f
 

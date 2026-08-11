@@ -1,0 +1,42 @@
+# Rating weights and the speculation penalty.
+#
+# NOTHING HERE IS FITTED, and that is deliberate. The LightGBM model already
+# fits; this exists so a portfolio manager can read WHY a name scores where it
+# does, and a weight tuned on the sample would make the explanation move every
+# time the sample does. Change these because you have a view, not because a
+# backtest went up.
+
+# Equal across the nine dimensions is the honest default: it asserts no opinion
+# about which matters more. Weights need not sum to 1 — the score divides by the
+# weight of the dimensions actually present, so a name still warming up on the
+# 252-session features is scored on what it has rather than dropped.
+weights:
+  beta: 1.0
+  liquidity: 1.0
+  momentum: 1.0
+  peer: 1.0
+  range: 1.0
+  speculation: 1.0
+  technical: 1.0
+  volatility: 1.0
+  # season carries no direction — a calendar tendency is not a quality
+  # judgement — so it has no rated features and never reaches the composite.
+  # Listed for completeness; remove it and nothing changes.
+  season: 0.0
+
+speculation:
+  # Which of the mentor's two label sets feeds the penalty. `spec_label` is his
+  # document exactly as written; `spec_label_adj` changes only the volatility
+  # measure. Tested against forward returns, both rank names in the same
+  # direction — see reports/speculation-labelling-20260810.md.
+  label_column: spec_label
+
+  # Z-score units subtracted per speculation point (0-3). A POLICY LEVER, not a
+  # measured constant: at 0.25 a name labelled Đầu cơ mạnh gives up 0.75 of a
+  # standard deviation, roughly the distance from a B to a C. Set it to 0 to see
+  # the features alone; raise it if the mandate treats speculation as
+  # disqualifying rather than merely costly.
+  #
+  # For scale: over 2009-2023 a name labelled Đầu cơ went on to underperform the
+  # market by 1.74% over the next month and was 5x more likely to lose over 20%.
+  penalty_per_point: 0.25

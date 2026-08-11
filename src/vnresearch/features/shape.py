@@ -20,9 +20,9 @@ different purpose (deciding what a backtest may fill).
 
 from __future__ import annotations
 
-from vnresearch.features.registry import register, win, windows
+from vnresearch.features.registry import SPECULATION, register, win, windows
 
-_CAT = "shape"
+_CAT = SPECULATION
 _CFG = windows()
 _W = _CFG["shape_window"]
 _L = _CFG["limit_window"]
@@ -47,6 +47,10 @@ register(
     f"AVG(CASE WHEN ret > 0 THEN 1.0 WHEN ret IS NOT NULL THEN 0.0 END) {win(_W)}",
     _CAT,
     _W,
+    # The one feature in this dimension that is not a warning sign. Steady
+    # participation is quality; the SPECULATION default would mark a stock down
+    # for climbing consistently.
+    direction=+1,
 )
 
 # How often this name closed pinned at the ceiling or the floor. bar_status is

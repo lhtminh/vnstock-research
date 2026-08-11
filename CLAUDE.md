@@ -85,6 +85,7 @@ actually traded on which day.
 | peer groups got smaller (7.7 -> 5.9 names, corr 0.388 -> 0.357) | expected, and it is the fix working. Demeaning by the INVESTABLE cross-section removes more of the common factor than demeaning by every ticker in the panel did, so less residual correlation is left and fewer pairs clear `MIN_CORR`. That threshold was calibrated against the old, inflated numbers — it is now effectively stricter. Not retuned, because tuning it against the same data that revealed it is how the dev/holdout orderings got reversed before |
 | only 58 rows in 2.5M are `dau_co_manh` | the mentor's weighting, and **do not "fix" it**. PVDI carries 0.40 on ABSOLUTE thresholds (1/2/3.5) and reaches its top bucket on 0.03% of rows, while the other three are percentile-scored and fill theirs by construction. Rescoring PVDI on percentiles makes the bucket reachable and makes the labels WORSE at predicting forward returns — worse in 8 of 8 pairwise comparisons, the most damaging of three candidate changes. Rare by design is the point. Tested in `reports/speculation-labelling-20260810.md` |
 | `spec_label_adj` differs from `spec_label` in only ONE setting | it used to be three. Volatility→magnitude helped (8 of 8), range→pct did nothing consistent, PVDI→percentile hurt. Both were reverted on measurement. A test pins the difference at exactly one setting so the reverts are not undone by someone who remembers the argument but not the result |
+| a feature's `direction` is declared, not measured from its own IC | deliberate, and `vnr rating --check` exists to keep it honest. A sign fitted to the sample flips between periods and takes the explanation with it, and the rating's entire job is being explainable. 58 of 63 agree today; the five that do not are a conversation, not a patch. Where a declaration contradicted the module's OWN documented reasoning — peer_gap_5 is called mean-reverting in its own comment, net_issuance_252 sits under a paragraph saying issuers underperform — that was a mistake and was fixed |
 | `research.features` stores REAL, but the parquet is DOUBLE | deliberate. `dataset.load()` casts every feature to float32 before the model sees one, so the extra bits are never consumed — 505 MB instead of 918 MB, and both paths round the same double to the same float32. Prices, returns and labels stay DOUBLE, because that reasoning does not cover them |
 | a feature with a NULL raw value has a NULL rank, not 0.5 | correct, and it was a real defect until `c2d20a9`. `PERCENT_RANK() OVER (ORDER BY col)` sorts NULLs last, so every row missing a value was bunched at the TOP of that day's ranking: measured 2026-08-04, 47 names with no `peer_corr` all scored 0.836 while the 234 real values spanned 0.000-0.832 — "no data" read to the model as "higher than 83% of the market". Invariant 3 one layer up. Fixed by ranking only real values; imputing a middle value instead would be inventing data. Verified on the published table: 317,121 rows have no `peer_corr` and **none** carries a rank |
 
@@ -97,6 +98,10 @@ actually traded on which day.
 - `label/forward.py` — entry/exit asymmetry
 - `label/speculation.py` — the mentor's scheme, and the three places it and the
   data disagree. Not a training target: every input is trailing
+- `rating/score.py` — why the directions are declared and not fitted, and the
+  three things a naive Z-score would get wrong
+- `features/registry.py` — the nine dimensions, and why renaming one can break a
+  lateral-alias reference
 - `model/cv.py` — the purge diagram
 - `backtest/engine.py` — NaN prices as the untradeable mechanism
 - `io/publish.py` — the schema boundary, and why the holdout is its own view
@@ -108,7 +113,9 @@ actually traded on which day.
 .venv/Scripts/vnr pipeline                 # needs Postgres on 5432
 .venv/Scripts/vnr train --controls         # ~7 min, runs the leakage checks
 .venv/Scripts/vnr freeze                   # ~10 min, writes models/frozen/
-.venv/Scripts/vnr publish                  # ~20s, labelled sample -> research schema
+.venv/Scripts/vnr rating                   # ~10s, dimension Z-scores + A-E grade
+.venv/Scripts/vnr rating --check           # where a declared direction disagrees
+.venv/Scripts/vnr publish                  # ~90s, everything -> research schema
 ```
 
 Install core before extras, and always with `-e`: `pip install ".[backtest]"`

@@ -63,6 +63,34 @@ def features() -> None:
 
 
 @app.command()
+def rating(check: bool = False) -> None:
+    """Score every name: a Z-score per dimension, a composite, and a grade.
+
+    Explains rather than predicts — see rating/score.py. Needs `vnr features`,
+    and picks up the speculation penalty if `vnr speculation` has been run.
+
+    --check reports where a feature's DECLARED direction disagrees with what it
+    actually did on the dev period. It reports; it does not flip anything.
+    """
+    from vnresearch.rating import score
+
+    if check:
+        df = score.check_directions()
+        # Compared to False rather than negated: `agrees` is None where the IC
+        # could not be measured at all, and `~df["agrees"]` would count those as
+        # disagreements.
+        bad = df[df["agrees"].eq(True) == False]
+        bad = bad[bad["ic"].notna()]
+        typer.echo(f"\n  {len(df) - len(bad)}/{len(df)} rated features agree with their sign\n")
+        if len(bad):
+            typer.echo("  DISAGREES — declared sign vs measured IC:")
+            typer.echo(bad.to_string(index=False))
+        return
+
+    typer.echo(f"\n-> {score.build()}")
+
+
+@app.command()
 def speculation() -> None:
     """Label speculation per the mentor's document: PVDI, turnover, volatility, range.
 

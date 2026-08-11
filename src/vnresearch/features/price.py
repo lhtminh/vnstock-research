@@ -1,10 +1,29 @@
-"""Volatility and intraday shape."""
+"""Volatility and intraday range — two dimensions, one file.
+
+They were one category called `price` until a portfolio manager had to read the
+output. "How volatile is this" and "how wildly does it swing inside the session"
+are different questions with different uses: the first sizes a position, the
+second says whether the quoted price means anything. Splitting them costs
+nothing, since a feature's category is metadata plus emission order.
+
+EMISSION ORDER. build.py sorts by (category, name) and derived features resolve
+by lateral alias, so vol_ratio_21_63 must still land after vol_21 and vol_63.
+It does — all three are VOLATILITY, and "vol_2" < "vol_6" < "vol_r".
+"""
 
 from __future__ import annotations
 
-from vnresearch.features.registry import lag, register, win, windows
+from vnresearch.features.registry import (
+    LIQUIDITY,
+    RANGE,
+    VOLATILITY,
+    lag,
+    register,
+    win,
+    windows,
+)
 
-_CAT = "price"
+_CAT = VOLATILITY
 _CFG = windows()
 
 for _n in _CFG["vol_windows"]:
@@ -27,26 +46,32 @@ register(
 
 # Overnight gap. In a market with price limits a big gap often means the
 # session opened locked, so this doubles as a stress indicator.
-register("gap", f"open / NULLIF({lag('close', 1)}, 0) - 1", _CAT, 2)
+register("gap", f"open / NULLIF({lag('close', 1)}, 0) - 1", RANGE, 2, direction=0)
 
 # Intraday range as a fraction of price.
-register("hl_range", "(high - low) / NULLIF(close, 0)", _CAT, 1)
+register("hl_range", "(high - low) / NULLIF(close, 0)", RANGE, 1)
 
 # Where in the day's range the close landed: 1 = closed on the high.
+#
+# Closing strong reads like a positive, and it is not: this is a ONE-SESSION
+# measure, so momentum.py's reversal rule applies and strength here gives back
+# rather than continues. Measured IC -0.029.
 register(
     "close_location",
     "(close - low) / NULLIF(high - low, 0)",
-    _CAT,
+    RANGE,
     1,
+    direction=-1,
 )
 
 # How often the ticker actually traded recently. A name that prints a price
 # every day is a different animal from one that trades twice a week, and the
-# raw ADTV number hides that.
+# raw ADTV number hides that. LIQUIDITY, not range — it says whether there is a
+# market at all.
 register(
     "trade_freq_21",
     f"AVG(CASE WHEN volume > 0 THEN 1.0 ELSE 0.0 END) {win(21)}",
-    _CAT,
+    LIQUIDITY,
     21,
 )
 
@@ -118,7 +143,10 @@ register(
 # are worth separating because they are earned by different people: the
 # overnight move prices news nobody could trade on, the intraday move is the
 # session's actual auction.
-register("intraday_ret", "close / NULLIF(open, 0) - 1", _CAT, 1)
+# A one-session return, so momentum.py's reversal rule applies: at this horizon
+# strength gives back rather than continues. Declared -1 for that reason, and
+# the measured IC agrees at -0.025.
+register("intraday_ret", "close / NULLIF(open, 0) - 1", RANGE, 1, direction=-1)
 
 # What share of recent movement happened overnight. A name whose return arrives
 # almost entirely at the open is one retail cannot actually capture.
@@ -130,6 +158,35 @@ register(
     f"overnight_frac_{_range_w}",
     f"""SUM(ABS(open / NULLIF(prev_close, 0) - 1)) {win(_range_w)}
         / NULLIF(SUM(ABS(ret)) {win(_range_w)}, 0)""",
-    _CAT,
+    RANGE,
     _range_w + 1,
+)
+
+# Rogers-Satchell: a range estimator that stays unbiased when the stock is
+# trending, which Parkinson and Garman-Klass do not — both assume zero drift and
+# read a steady one-way climb as volatility. On a market with daily price limits
+# and long directional runs that assumption is worth dropping.
+_rs = f"""AVG(LN(high / NULLIF(close, 0)) * LN(high / NULLIF(open, 0))
+              + LN(low / NULLIF(close, 0)) * LN(low / NULLIF(open, 0))) {win(_vol_w)}"""
+register(
+    f"rogers_satchell_{_vol_w}",
+    f"CASE WHEN ({_rs}) IS NOT NULL THEN SQRT(GREATEST({_rs}, 0)) END",
+    VOLATILITY,
+    _vol_w,
+)
+
+# Fat tails. Two names with identical vol_21 are not the same risk if one gets
+# there from steady 1% days and the other from a fortnight of nothing and one
+# 15% session — the second is where a stop-loss fails to fill.
+register(f"ret_kurt_{_vol_w}", f"KURTOSIS(ret) {win(_vol_w)}", VOLATILITY, _vol_w)
+
+# Is today's range wide FOR THIS NAME? hl_range is a level, so across the
+# cross-section it partly ranks which stocks are inherently jumpy. This ranks
+# the session against the stock's own recent sessions.
+register(
+    f"range_expansion_{_range_w}",
+    f"""((high - low) / NULLIF(close, 0))
+        / NULLIF(AVG((high - low) / NULLIF(close, 0)) {win(_range_w)}, 0)""",
+    RANGE,
+    _range_w,
 )

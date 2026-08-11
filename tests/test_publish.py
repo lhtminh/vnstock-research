@@ -191,7 +191,7 @@ def test_the_catalog_round_trips_through_a_real_insert():
     con.execute(
         """CREATE TABLE research.feature_catalog (
                feature text PRIMARY KEY, dimension text, rank_column text,
-               lookback int, definition text)"""
+               lookback int, direction int, definition text)"""
     )
     con.execute(publish._catalog_insert_sql())
     got = con.execute("SELECT feature, dimension, definition FROM research.feature_catalog").df()
@@ -212,7 +212,7 @@ def test_every_catalogued_feature_reaches_the_training_matrix(sql_train):
     con.execute(
         """CREATE TABLE research.feature_catalog (
                feature text PRIMARY KEY, dimension text, rank_column text,
-               lookback int, definition text)"""
+               lookback int, direction int, definition text)"""
     )
     con.execute(publish._catalog_insert_sql())
     ranks = con.execute("SELECT rank_column FROM research.feature_catalog").df()["rank_column"]

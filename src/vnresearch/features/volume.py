@@ -7,17 +7,20 @@ put-through trades entirely.
 
 from __future__ import annotations
 
-from vnresearch.features.registry import register, win, windows
+from vnresearch.features.registry import LIQUIDITY, register, win, windows
 
-_CAT = "volume"
+_CAT = LIQUIDITY
 _CFG = windows()
 
 # Size proxy until company_snapshot covers more than 51 tickers. Log because
 # turnover spans six orders of magnitude across this universe.
-register("log_adtv", "LN(NULLIF(adtv, 0))", _CAT, 20)
+register("log_adtv", "LN(NULLIF(adtv, 0))", _CAT, 20)  # bigger is easier to trade
 
 # Today's turnover against its own recent average: a volume spike.
-register("turnover_ratio", "turnover / NULLIF(adtv, 0)", _CAT, 20)
+# A volume SPIKE, not a liquidity level. Unusual activity cuts both ways —
+# accumulation and distribution look identical here — so it is left out of the
+# rating rather than guessed at.
+register("turnover_ratio", "turnover / NULLIF(adtv, 0)", _CAT, 20, direction=0)
 
 for _n in (5, 21):
     register(
@@ -25,6 +28,7 @@ for _n in (5, 21):
         f"AVG(turnover) {win(_n)} / NULLIF(adtv, 0)",
         _CAT,
         max(_n, 20),
+        direction=0,
     )
 
 # Amihud illiquidity: price impact per unit of turnover. High means the stock
@@ -40,6 +44,7 @@ for _n in _CFG["amihud_windows"]:
         f"AVG(ABS(ret) / NULLIF(turnover, 0)) {win(_n)} * 1e9",
         _CAT,
         _n,
+        direction=-1,  # ILLIQUIDITY — the one liquidity feature where high is bad
     )
 
 # Volume as a standardised surprise rather than a level. turnover_ratio above is
@@ -52,6 +57,7 @@ register(
     f"(volume - AVG(volume) {win(_vw)}) / NULLIF(STDDEV_SAMP(volume) {win(_vw)}, 0)",
     _CAT,
     _vw,
+    direction=0,  # a surprise has no sign until you know which way it broke
 )
 
 # Is liquidity building or draining? A ratio of a fast to a slow turnover
@@ -73,6 +79,7 @@ register(
     f"AVG(CASE WHEN tradeable THEN 0.0 ELSE 1.0 END) {win(21)}",
     _CAT,
     21,
+    direction=-1,
 )
 
 # Net share issuance over the trailing year: how much the share count grew
@@ -91,4 +98,8 @@ register(
 # Coverage is thin until the weekly corporate-action sweep finishes: 48 of
 # 1,698 tickers as of 2026-08-03. A NULL here means "not yet fetched", never
 # "no issuance".
-register("net_issuance_252", "dilution_252", _CAT, 1)
+#
+# Direction -1, against the dimension default, because this is not a liquidity
+# reading at all — it is dilution, and the paragraph above already says issuers
+# underperform. Measured IC agrees at -0.019.
+register("net_issuance_252", "dilution_252", _CAT, 1, direction=-1)

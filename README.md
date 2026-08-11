@@ -69,7 +69,9 @@ touched.
 | `research.training_sample` | 644k | **view** — the matrix the model trains on |
 | `research.holdout_sample` | 212k | **view** — the frozen holdout, kept separate on purpose |
 | `research.speculation` | 2.9M | Speculation labels, **both** the mentor's scheme and an adjusted one |
-| `research.feature_catalog` | 59 | Each feature's dimension, lookback and SQL definition |
+| `research.ratings` | 943k | Dimension Z-scores, composite, speculation penalty, A-E grade |
+| `research.dim_*` | — | **views** — one per dimension, raw + rank, nine of them |
+| `research.feature_catalog` | 71 | Each feature's dimension, direction, lookback and SQL definition |
 | `research.publish_runs` | — | One row per publish, with the mirror snapshot it came from |
 
 The catalog is what makes the matrix readable — otherwise it is 127 unlabelled
@@ -83,15 +85,44 @@ FROM research.feature_catalog GROUP BY 1 ORDER BY 2 DESC;
 
 | dimension | n | dimension | n |
 |---|---|---|---|
-| price (range + volatility) | 13 | technical | 7 |
-| volume (liquidity) | 10 | shape (speculation) | 6 |
-| momentum | 9 | peer | 4 |
-| market (beta) | 8 | season | 2 |
+| technical | 16 | volatility | 9 |
+| liquidity | 11 | beta | 8 |
+| momentum | 9 | range | 6 |
+| speculation | 6 | peer | 4 |
+| season | 2 | | |
+
+Each also has its own view — `research.dim_technical`, `research.dim_volatility`
+and so on — carrying that dimension's raw values beside their ranks. The wide
+`research.features` table is right for a model and wrong for a person.
 
 `definition` carries the SQL each feature is computed from, which is what makes
 a column answerable rather than merely present: `rsi_14` here is a 14-session
 **simple** average, not the exponential one a charting package draws, and
 reading the expression is the only way to know which you have.
+
+## Ratings
+
+`vnr rating` scores every name in the day's universe: one Z-score per dimension,
+a weighted composite, a speculation penalty, and an A-E grade.
+
+```sql
+SELECT ticker, rating, rating_score, z_momentum, z_volatility, z_liquidity, spec_label
+FROM research.ratings WHERE date = '2026-08-10' ORDER BY rating_score DESC LIMIT 20;
+```
+
+It **explains**; the model in `model/` **predicts**. Every dimension keeps its
+own column because "strong momentum, thin liquidity" and the reverse are
+different positions even at the same overall score, and a portfolio manager
+needs to see which one they are holding.
+
+Nothing in it is fitted. Weights are equal by default, and each feature's
+direction is DECLARED in the registry from what it measures — a sign fitted to
+the sample flips between periods and takes the explanation with it.
+`vnr rating --check` reports where the data disagrees (58 of 63 agree today); it
+reports and does not flip.
+
+Grades are 10/20/40/20/10 of each day's universe, so a grade is always relative
+to what else was tradeable that day.
 
 ## Speculation labels
 

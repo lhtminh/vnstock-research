@@ -8,15 +8,18 @@ a different reason, which is that earlier years have no cross-section to rank.)
 
 from __future__ import annotations
 
-from vnresearch.features.registry import register, win, windows
+from vnresearch.features.registry import BETA, register, win, windows
 
-_CAT = "market"
+_CAT = BETA
 _CFG = windows()
 _W = _CFG["beta_window"]
 _WL = _CFG["beta_window_long"]
 
 register("beta_60", f"REGR_SLOPE(ret, mkt_ret) {win(_W)}", _CAT, _W)
-register("alpha_60", f"REGR_INTERCEPT(ret, mkt_ret) {win(_W)}", _CAT, _W)
+# The one feature in this dimension where more is better: alpha is the part the
+# market did not give you. Everything else here is market EXPOSURE, which
+# invariant 8 exists to stop anyone counting as skill.
+register("alpha_60", f"REGR_INTERCEPT(ret, mkt_ret) {win(_W)}", _CAT, _W, direction=+1)
 
 # The same beta over a slower window. On its own it says little that beta_60
 # does not; as a PAIR the two say whether a name's market sensitivity is stable,
@@ -49,10 +52,13 @@ register(
 
 # Return in excess of the market over the same window — the simplest form of
 # "did this name beat the index", and largely free of the market's own trend.
+# Same reversal/persistence split as momentum.py: beating the index over a week
+# tends to give some back, over a quarter it tends to continue.
 for _n in (5, 21, 63):
     register(
         f"excess_ret_{_n}",
         f"(EXP(SUM(LN(1 + ret)) {win(_n)}) - 1) - (EXP(SUM(LN(1 + mkt_ret)) {win(_n)}) - 1)",
         _CAT,
         _n,
+        direction=-1 if _n <= 5 else +1,
     )

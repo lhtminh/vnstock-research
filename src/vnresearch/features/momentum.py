@@ -8,10 +8,15 @@ rather than lumped in with the long ones.
 
 from __future__ import annotations
 
-from vnresearch.features.registry import lag, register, win, windows
+from vnresearch.features.registry import MOMENTUM, lag, register, win, windows
 
-_CAT = "momentum"
+_CAT = MOMENTUM
 _CFG = windows()
+
+# Direction follows the horizon, not the dimension: this module's whole premise
+# is that 1- and 5-session returns REVERSE while longer ones persist, so rating
+# them all "higher is better" would score the short end backwards.
+_REVERSAL = 5
 
 for _n in _CFG["momentum_windows"]:
     register(
@@ -19,6 +24,7 @@ for _n in _CFG["momentum_windows"]:
         f"close / NULLIF({lag('close', _n)}, 0) - 1",
         _CAT,
         _n,
+        direction=-1 if _n <= _REVERSAL else +1,
     )
 
 # 12-month momentum skipping the most recent month. The skip matters: the last

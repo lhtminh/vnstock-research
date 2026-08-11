@@ -11,10 +11,10 @@ SQL); this only registers them so alpha analysis and the model see them.
 
 from __future__ import annotations
 
-from vnresearch.features.registry import register
+from vnresearch.features.registry import PEER, SEASON, register
 
 # --- peers -----------------------------------------------------------------
-_P = "peer"
+_P = PEER
 
 # What this ticker's cluster did recently, market move already removed.
 #
@@ -26,17 +26,21 @@ register("peer_ret_5", "peer_ret_5", _P, 1)
 register("peer_ret_21", "peer_ret_21", _P, 1)
 
 # The stock's own move against its cluster's. Positive means it has outrun the
-# names it usually tracks, which is the mean-reversion side of the same idea.
-register("peer_gap_5", "ret_5 - peer_ret_5", _P, 5)
+# names it usually tracks, which is the mean-reversion side of the same idea —
+# so having outrun them is a caution, not a merit. Direction -1 despite the
+# dimension's default, and the measured IC agrees at -0.023.
+register("peer_gap_5", "ret_5 - peer_ret_5", _P, 5, direction=-1)
 
 # How tightly the cluster holds together. A name with strong peers is one whose
 # peer signal is worth believing; a loose one is nearly independent, and this
 # lets the model discount the features above accordingly rather than treating
 # every cluster as equally informative.
-register("peer_corr", "peer_corr", _P, 1)
+# How tight the cluster is, not whether the stock is good. It scales how much
+# to believe the three above, which is not itself a quality judgement.
+register("peer_corr", "peer_corr", _P, 1, direction=0)
 
 # --- seasonality -----------------------------------------------------------
-_S = "season"
+_S = SEASON
 
 # This ticker's own tendency in this calendar month, averaged over PRIOR years
 # only (see panel.py — the window excludes the current year).

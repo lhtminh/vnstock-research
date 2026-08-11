@@ -177,7 +177,16 @@ def _write_catalog(con) -> int:
                 dimension   text NOT NULL,
                 rank_column text NOT NULL,
                 lookback    int  NOT NULL,
+                direction   int  NOT NULL,
                 definition  text NOT NULL)""",
+    )
+    # Additive, so an existing table from before `direction` picks it up without
+    # a migration. Postgres fills existing rows with the default, and TRUNCATE
+    # below replaces every one of them anyway.
+    _exec(
+        con,
+        f"ALTER TABLE {SCHEMA}.feature_catalog "
+        f"ADD COLUMN IF NOT EXISTS direction int NOT NULL DEFAULT 0",
     )
     _exec(con, f"TRUNCATE {SCHEMA}.feature_catalog")
     _exec(con, _catalog_insert_sql())
@@ -191,13 +200,32 @@ def _catalog_insert_sql() -> str:
 
     rows = ", ".join(
         f"({_literal(f.name)}, {_literal(f.category)}, {_literal(f.name + '_rank')}, "
-        f"{f.lookback}, {_literal(f.sql)})"
+        f"{f.lookback}, {f.direction}, {_literal(f.sql)})"
         for f in sorted(all_features().values(), key=lambda x: (x.category, x.name))
     )
     return (
         f"INSERT INTO {SCHEMA}.feature_catalog "
-        f"(feature, dimension, rank_column, lookback, definition) VALUES {rows}"
+        f"(feature, dimension, rank_column, lookback, direction, definition) VALUES {rows}"
     )
+
+
+def _dimension_view_sql(dim: str, feats: list) -> str:
+    """One view per dimension: its raw values and ranks, and nothing else.
+
+    `research.features` is 143 columns wide, which is right for a model and
+    wrong for a person. A portfolio manager asking "how volatile is this book"
+    should not have to know which of 143 columns are the volatility ones — the
+    registry already knows, so the answer is a view rather than a convention.
+
+    Raw beside rank on purpose. The rank is what the model consumes and what
+    makes names comparable; the raw value is the only one that means anything
+    out loud ("RSI 78", not "RSI in the 91st percentile").
+    """
+    cols = ", ".join(f"{f.name}, {f.name}_rank" for f in feats)
+    return f"""
+CREATE VIEW {SCHEMA}.dim_{dim} AS
+SELECT ticker, date, close, adtv, exchange, {cols}
+FROM {SCHEMA}.features"""
 
 
 def _record_run(con, rows: dict[str, int]) -> None:
@@ -248,10 +276,17 @@ def build(verbose: bool = True) -> dict[str, Any]:
         # half-replaced, and this is the only moment it can be caught cheaply.
         cols = _feature_columns(con, feats_path.as_posix())
 
+        from vnresearch.features.registry import all_features
+
+        by_dim: dict[str, list] = {}
+        for f in all_features().values():
+            by_dim.setdefault(f.category, []).append(f)
+        by_dim = {k: sorted(v, key=lambda x: x.name) for k, v in sorted(by_dim.items())}
+
         _exec(con, f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
         # Views depend on the tables, and Postgres refuses to drop a table out
-        # from under one. They are rebuilt from config at the end anyway.
-        for v in ("training_sample", "holdout_sample"):
+        # from under one. They are rebuilt from the registry at the end anyway.
+        for v in ("training_sample", "holdout_sample", *(f"dim_{d}" for d in by_dim)):
             _exec(con, f"DROP VIEW IF EXISTS {SCHEMA}.{v}")
 
         t0 = time.time()
@@ -304,6 +339,32 @@ def build(verbose: bool = True) -> dict[str, Any]:
         elif verbose:
             print("  speculation             absent — run `vnr speculation` to build it")
 
+        # Same treatment: a separate command, absent on a fresh checkout.
+        n_rate = 0
+        rate_path = config.path("data/features/ratings.parquet")
+        if rate_path.exists():
+            t0 = time.time()
+            con.execute(
+                f"CREATE OR REPLACE TABLE pg.{SCHEMA}.ratings AS "
+                f"SELECT * FROM read_parquet('{rate_path.as_posix()}')"
+            )
+            n_rate = con.execute(f"SELECT count(*) FROM pg.{SCHEMA}.ratings").fetchone()[0]
+            _exec(
+                con,
+                f"CREATE UNIQUE INDEX IF NOT EXISTS ratings_key ON {SCHEMA}.ratings (ticker, date)",
+            )
+            _exec(con, f"CREATE INDEX IF NOT EXISTS ratings_date ON {SCHEMA}.ratings (date)")
+            # The one a portfolio manager actually filters on.
+            _exec(
+                con,
+                f"CREATE INDEX IF NOT EXISTS ratings_grade ON {SCHEMA}.ratings (date, rating)",
+            )
+            if verbose:
+                took = time.time() - t0
+                print(f"  ratings             {n_rate:>9,} rows                 {took:5.1f}s")
+        elif verbose:
+            print("  ratings                 absent — run `vnr rating` to build it")
+
         # UNIQUE, not just an index: (ticker, date) is the key both tables are
         # joined on, and a duplicate would silently multiply the training set.
         # Named, so a run that died between the table and its index can be
@@ -333,9 +394,13 @@ def build(verbose: bool = True) -> dict[str, Any]:
         n_train = con.execute(f"SELECT count(*) FROM pg.{SCHEMA}.training_sample").fetchone()[0]
         n_hold = con.execute(f"SELECT count(*) FROM pg.{SCHEMA}.holdout_sample").fetchone()[0]
 
+        for dim, fs in by_dim.items():
+            _exec(con, _dimension_view_sql(dim, fs))
+
         n_cat = _write_catalog(con)
         _record_run(con, {"features": n_feat, "labels": n_lab, "features_cols": len(cols)})
-        _comment(con, skip=set() if n_spec else {"speculation"})
+        skip = {n for n, present in (("speculation", n_spec), ("ratings", n_rate)) if not present}
+        _comment(con, skip=skip)
 
         if verbose:
             dims = con.execute(
@@ -343,6 +408,9 @@ def build(verbose: bool = True) -> dict[str, Any]:
             ).fetchall()
             print(f"  training_sample     {n_train:>9,} rows   (view, holdout excluded)")
             print(f"  holdout_sample      {n_hold:>9,} rows   (view, frozen — see invariant 10)")
+            print(
+                f"  dimension views     {len(by_dim):>9}   " + ", ".join(f"dim_{d}" for d in by_dim)
+            )
             print(f"  feature_catalog     {n_cat:>9} features across {len(dims)} dimensions")
             print("                        " + ", ".join(f"{d} {n}" for d, n in dims))
         return {
@@ -382,6 +450,16 @@ _COMMENTS: tuple[tuple[str, str, str], ...] = (
             "and range scored 0-3 and weighted 40/30/15/15. A DESCRIPTION of current "
             "behaviour from trailing data, not a forward-looking target — see "
             "config/speculation.yaml for where the source document is ambiguous."
+        ),
+    ),
+    (
+        "TABLE",
+        "ratings",
+        (
+            "One Z-score per dimension, a weighted composite, a speculation penalty and "
+            "an A-E grade, all cross-sectional within the day. EXPLAINS rather than "
+            "predicts — nothing here is fitted, and the model in model/ is what "
+            "forecasts. See config/rating.yaml for the weights and the penalty."
         ),
     ),
     (
